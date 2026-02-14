@@ -1,0 +1,139 @@
+:root {
+  --ink: #0f172a;
+  --navy: #0a2540;
+  --gold: #f3b521;
+  --sky: #e8f3ff;
+  --soft: #f8fafc;
+  --danger: #b42318;
+  --success: #067647;
+}
+
+body {
+  font-family: "Source Sans 3", sans-serif;
+  color: var(--ink);
+  background: linear-gradient(160deg, #fdfdfd 0%, #eff6ff 55%, #fff7e6 100%);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.brand-title {
+  font-family: "Merriweather", serif;
+}
+
+.navbar-university {
+  background: linear-gradient(90deg, var(--navy), #103e67);
+}
+
+.brand-mark {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: linear-gradient(150deg, var(--gold), #ffd975);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #3c2400;
+  font-weight: 700;
+}
+
+.hero-banner {
+  background: radial-gradient(circle at 15% 20%, #1c4f80 0%, var(--navy) 45%, #081d33 100%);
+  color: #fff;
+  border-radius: 20px;
+  overflow: hidden;
+  position: relative;
+}
+
+.hero-banner::after {
+  content: "";
+  position: absolute;
+  right: -120px;
+  top: -100px;
+  width: 320px;
+  height: 320px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.15);
+}
+
+.hero-badge {
+  background: rgba(243, 181, 33, 0.14);
+  border: 1px solid rgba(243, 181, 33, 0.45);
+  color: #ffe3a1;
+}
+
+.section-card {
+  border: none;
+  border-radius: 16px;
+  box-shadow: 0 16px 30px rgba(11, 36, 63, 0.08);
+}
+
+.section-heading {
+  font-size: 1.8rem;
+  color: #11273f;
+}
+
+.stat-card {
+  border: none;
+  border-radius: 14px;
+  box-shadow: 0 10px 22px rgba(7, 31, 58, 0.08);
+}
+
+.stat-value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #072a4b;
+}
+
+.form-card {
+  border: none;
+  border-radius: 18px;
+  box-shadow: 0 14px 30px rgba(14, 39, 65, 0.12);
+}
+
+.alert-inline {
+  display: none;
+}
+
+.page-shell {
+  min-height: 100vh;
+}
+
+.quick-panel {
+  border: 1px solid #d9e5f5;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.table-wrap {
+  max-height: 360px;
+  overflow: auto;
+}
+
+.footer-university {
+  background: #061727;
+  color: #d8e4ef;
+}
+
+.dot-live {
+  width: 10px;
+  height: 10px;
+  background: #12b76a;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+}
+
+@media (max-width: 768px) {
+  .hero-banner {
+    border-radius: 14px;
+  }
+
+  .section-heading {
+    font-size: 1.4rem;
+  }
+}
+
