@@ -30,21 +30,30 @@ const signupValidator = [
 ];
 
 const loginValidator = [body("identifier").trim().notEmpty(), body("password").notEmpty(), validateRequest];
-const verifyOtpValidator = [
+const verifyLoginOtpValidator = [
   body("login_token").notEmpty(),
   body("otp_code").matches(/^[0-9]{6}$/),
   validateRequest,
 ];
 const resendOtpValidator = [body("login_token").notEmpty(), validateRequest];
-const forgotPasswordValidator = [body("email").trim().isEmail(), validateRequest];
-const verifyResetTokenValidator = [
+const forgotPasswordValidator = [
+  body("email").optional().trim().isEmail(),
+  body("faculty_id").optional().trim().notEmpty(),
+  body().custom((value) => {
+    if (!value?.email && !value?.faculty_id) {
+      throw new Error("Email or Faculty ID is required");
+    }
+    return true;
+  }),
+  validateRequest,
+];
+const verifyResetOtpValidator = [
   body("email").trim().isEmail(),
-  body("reset_token").trim().matches(/^[0-9]{6}$/),
+  body("otp").trim().matches(/^[0-9]{6}$/),
   validateRequest,
 ];
 const resetPasswordValidator = [
   body("email").trim().isEmail(),
-  body("reset_token").trim().matches(/^[0-9]{6}$/),
   body("new_password").isLength({ min: 8 }),
   body("confirm_password").notEmpty(),
   validateRequest,
@@ -54,10 +63,10 @@ router.get("/signup-meta", optionalAuth, authController.getSignupMeta);
 router.get("/signup-options", authController.getSignupOptions);
 router.post("/signup", optionalAuth, uploadProfilePhoto, signupValidator, authController.signup);
 router.post("/login", loginValidator, authController.login);
-router.post("/verify-otp", verifyOtpValidator, authController.verifyOtp);
+router.post("/verify-login-otp", verifyLoginOtpValidator, authController.verifyLoginOtp);
 router.post("/resend-otp", resendOtpValidator, authController.resendOtp);
 router.post("/forgot-password", forgotPasswordValidator, authController.forgotPassword);
-router.post("/verify-reset-token", verifyResetTokenValidator, authController.verifyResetToken);
+router.post("/verify-otp", verifyResetOtpValidator, authController.verifyOtp);
 router.post("/reset-password", resetPasswordValidator, authController.resetPassword);
 
 module.exports = router;

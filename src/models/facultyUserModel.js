@@ -88,6 +88,18 @@ async function findByEmail(email) {
   return result.rows[0] || null;
 }
 
+async function findByEmailOrFacultyId(identifier) {
+  const value = String(identifier || "").trim();
+  const result = await pool.query(
+    `SELECT *
+     FROM faculty_users
+     WHERE LOWER(email) = LOWER($1) OR LOWER(faculty_id) = LOWER($1)
+     LIMIT 1`,
+    [value]
+  );
+  return result.rows[0] || null;
+}
+
 async function updatePasswordHash(id, passwordHash) {
   await pool.query(
     `UPDATE faculty_users
@@ -108,6 +120,7 @@ module.exports = {
   findByIdentifier,
   findBasicById,
   findByEmail,
+  findByEmailOrFacultyId,
   updatePasswordHash,
   updateLastLogin,
 };

@@ -23,7 +23,7 @@ if (otpForm) {
     verifyOtpBtn.textContent = "Verifying...";
 
     try {
-      const result = await apiRequest("/auth/verify-otp", {
+      const result = await apiRequest("/auth/verify-login-otp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -71,4 +71,3 @@ if (resendOtpBtn) {
     }
   });
 }
-

@@ -1,6 +1,11 @@
 const loginForm = document.getElementById("loginForm");
 const loginBtn = document.getElementById("loginBtn");
 
+const messageFromQuery = new URLSearchParams(window.location.search).get("message");
+if (messageFromQuery) {
+  showAlert("loginAlert", messageFromQuery, "success");
+}
+
 if (loginForm) {
   loginForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -10,7 +15,7 @@ if (loginForm) {
     const payload = Object.fromEntries(formData.entries());
 
     loginBtn.disabled = true;
-    loginBtn.textContent = "Verifying...";
+    loginBtn.textContent = "Logging in...";
 
     try {
       const result = await apiRequest("/auth/login", {
@@ -32,8 +37,7 @@ if (loginForm) {
       showAlert("loginAlert", err.message);
     } finally {
       loginBtn.disabled = false;
-      loginBtn.textContent = "Send OTP";
+      loginBtn.textContent = "Login";
     }
   });
 }
-

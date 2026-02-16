@@ -1,6 +1,5 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const crypto = require("crypto");
 const pool = require("../config/db");
 const {
   findDuplicateByFacultyEmailMobile,
@@ -9,15 +8,20 @@ const {
   findByIdentifier,
   findBasicById,
   findByEmail,
+  findByEmailOrFacultyId,
   updatePasswordHash,
   updateLastLogin,
 } = require("../models/facultyUserModel");
 const { createOtpVerification, findValidOtp, markOtpUsed } = require("../models/otpModel");
 const {
-  invalidateActiveResetTokens,
-  createPasswordResetToken,
-  findValidPasswordResetToken,
-  markPasswordResetTokenUsed,
+  cleanupExpiredResetOtps,
+  deleteResetOtpsByUser,
+  createPasswordResetOtp,
+  findLatestActiveResetOtpByEmail,
+  incrementResetOtpAttempt,
+  markResetOtpVerified,
+  findLatestVerifiedResetOtpByEmail,
+  deleteResetOtpById,
 } = require("../models/passwordResetModel");
 const {
   listDepartments,
@@ -27,6 +31,7 @@ const {
 } = require("../models/academicLookupModel");
 const { addFacultyDepartments, addFacultyUserSubjects } = require("../models/facultyMappingModel");
 const { generateOtp, maskMobileNumber } = require("../utils/otp");
+const { sendPasswordResetOtpEmail } = require("../utils/mailer");
 const { logActivity } = require("../utils/activity");
 
 const ROLE_FACULTY = "FACULTY";
@@ -41,8 +46,17 @@ function buildError(statusCode, message) {
   return error;
 }
 
-function hashResetToken(resetToken) {
-  return crypto.createHash("sha256").update(String(resetToken)).digest("hex");
+function toPositiveInt(rawValue, fallback) {
+  const value = Number.parseInt(rawValue, 10);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function getResetOtpExpiryMinutes() {
+  return toPositiveInt(process.env.PASSWORD_RESET_OTP_EXPIRES_MINUTES, 5);
+}
+
+function getResetOtpMaxAttempts() {
+  return toPositiveInt(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS, 5);
 }
 
 function normalizeRole(inputRole) {
@@ -238,7 +252,7 @@ async function login(payload) {
   };
 }
 
-async function verifyOtp(payload) {
+async function verifyLoginOtp(payload) {
   let decoded;
   try {
     decoded = jwt.verify(payload.login_token, process.env.JWT_SECRET);
@@ -317,39 +331,76 @@ async function resendOtp(payload) {
 }
 
 async function forgotPassword(payload) {
-  const user = await findByEmail(payload.email);
-  if (!user) {
-    throw buildError(404, "User not found with this email.");
+  const identifier = String(payload.email || payload.faculty_id || "").trim();
+  if (!identifier) {
+    throw buildError(400, "Email or Faculty ID is required");
   }
 
-  const resetToken = generateOtp(6);
-  const resetTokenHash = hashResetToken(resetToken);
+  const user = await findByEmailOrFacultyId(identifier);
+  if (!user) {
+    throw buildError(404, "Account not found");
+  }
 
-  await invalidateActiveResetTokens(user.id);
-  await createPasswordResetToken(user.id, user.email, resetTokenHash);
-  await logActivity(user.id, "Forgot Password Requested", "Password reset token generated");
+  await cleanupExpiredResetOtps();
+
+  const otpCode = generateOtp(6);
+  const expiryMinutes = getResetOtpExpiryMinutes();
+  await deleteResetOtpsByUser(user.id);
+  await createPasswordResetOtp(user.id, user.email, otpCode, expiryMinutes);
+
+  try {
+    await sendPasswordResetOtpEmail(user.email, otpCode);
+  } catch (err) {
+    await deleteResetOtpsByUser(user.id);
+    if (err.statusCode) {
+      throw err;
+    }
+    throw buildError(500, "Unable to send OTP email right now. Please try again.");
+  }
+
+  await logActivity(user.id, "Forgot Password Requested", "Password reset OTP sent to registered email");
 
   return {
-    message: "Password reset token generated and valid for 10 minutes.",
-    reset_token_preview: process.env.NODE_ENV !== "production" ? resetToken : undefined,
+    message: "OTP sent to your registered email",
+    email: user.email,
+    otp_preview: process.env.NODE_ENV !== "production" ? otpCode : undefined,
   };
 }
 
-async function verifyResetToken(payload) {
+async function verifyOtp(payload) {
+  await cleanupExpiredResetOtps();
+
   const user = await findByEmail(payload.email);
   if (!user) {
-    throw buildError(404, "User not found with this email.");
+    throw buildError(404, "Account not found");
   }
 
-  const tokenHash = hashResetToken(payload.reset_token);
-  const tokenRow = await findValidPasswordResetToken(user.id, tokenHash);
-  if (!tokenRow) {
-    throw buildError(401, "Invalid or expired reset token.");
+  const otpRow = await findLatestActiveResetOtpByEmail(user.email);
+  if (!otpRow) {
+    throw buildError(401, "Invalid or expired OTP");
   }
+
+  const maxAttempts = getResetOtpMaxAttempts();
+  if (otpRow.attempt_count >= maxAttempts) {
+    await deleteResetOtpById(otpRow.id);
+    throw buildError(401, "Invalid or expired OTP");
+  }
+
+  if (String(payload.otp || "").trim() !== otpRow.otp_code) {
+    const updated = await incrementResetOtpAttempt(otpRow.id);
+    if (updated && updated.attempt_count >= maxAttempts) {
+      await deleteResetOtpById(otpRow.id);
+    }
+    throw buildError(401, "Invalid or expired OTP");
+  }
+
+  await markResetOtpVerified(otpRow.id);
+  await logActivity(user.id, "Password Reset OTP Verified", "Password reset OTP verified successfully");
 
   return {
-    message: "Reset token verified successfully.",
+    message: "OTP verified successfully",
     can_reset_password: true,
+    email: user.email,
   };
 }
 
@@ -358,36 +409,36 @@ async function resetPassword(payload) {
     throw buildError(400, "New password and confirm password do not match.");
   }
 
+  await cleanupExpiredResetOtps();
+
   const user = await findByEmail(payload.email);
   if (!user) {
-    throw buildError(404, "User not found with this email.");
+    throw buildError(404, "Account not found");
   }
 
-  const tokenHash = hashResetToken(payload.reset_token);
-  const tokenRow = await findValidPasswordResetToken(user.id, tokenHash);
-  if (!tokenRow) {
-    throw buildError(401, "Invalid or expired reset token.");
+  const verifiedOtp = await findLatestVerifiedResetOtpByEmail(user.email);
+  if (!verifiedOtp) {
+    throw buildError(401, "OTP verification required");
   }
 
   const passwordHash = await bcrypt.hash(payload.new_password, 10);
   await updatePasswordHash(user.id, passwordHash);
-  await markPasswordResetTokenUsed(tokenRow.id);
-  await logActivity(user.id, "Password Reset Successful", "Password was reset using forgot-password flow");
+  await deleteResetOtpsByUser(user.id);
+  await logActivity(user.id, "Password Reset Successful", "Password was reset using OTP flow");
 
   return {
-    message: "Password reset successful.",
+    message: "Password reset successful",
   };
 }
 
 module.exports = {
   signup,
   login,
+  verifyLoginOtp,
   verifyOtp,
   resendOtp,
   getSignupMeta,
   getSignupOptions,
   forgotPassword,
-  verifyResetToken,
   resetPassword,
 };
-

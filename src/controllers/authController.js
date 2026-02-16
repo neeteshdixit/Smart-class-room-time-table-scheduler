@@ -43,9 +43,9 @@ async function login(req, res, next) {
   }
 }
 
-async function verifyOtp(req, res, next) {
+async function verifyLoginOtp(req, res, next) {
   try {
-    const response = await authService.verifyOtp(req.body);
+    const response = await authService.verifyLoginOtp(req.body);
     return res.json(response);
   } catch (err) {
     return handleError(err, next, res);
@@ -70,9 +70,9 @@ async function forgotPassword(req, res, next) {
   }
 }
 
-async function verifyResetToken(req, res, next) {
+async function verifyOtp(req, res, next) {
   try {
-    const response = await authService.verifyResetToken(req.body);
+    const response = await authService.verifyOtp(req.body);
     return res.json(response);
   } catch (err) {
     return handleError(err, next, res);
@@ -93,9 +93,9 @@ module.exports = {
   getSignupOptions,
   signup,
   login,
+  verifyLoginOtp,
   verifyOtp,
   resendOtp,
   forgotPassword,
-  verifyResetToken,
   resetPassword,
 };
