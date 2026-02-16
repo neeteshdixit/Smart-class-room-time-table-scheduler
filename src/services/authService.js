@@ -405,7 +405,8 @@ async function verifyOtp(payload) {
 }
 
 async function resetPassword(payload) {
-  if (payload.new_password !== payload.confirm_password) {
+  const confirmPassword = payload.confirm_password || payload.new_password;
+  if (payload.new_password !== confirmPassword) {
     throw buildError(400, "New password and confirm password do not match.");
   }
 

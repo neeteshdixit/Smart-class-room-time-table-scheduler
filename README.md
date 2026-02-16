@@ -5,7 +5,8 @@ Node.js + Express + PostgreSQL implementation for:
 - Role-based signup (Faculty/Admin) with duplicate checks
 - Profile photo upload using Multer
 - Multi-department and multi-subject selection during signup
-- Login + OTP verification (simulated OTP)
+- Login + OTP verification
+- Forgot password with email OTP verification
 - Faculty dashboard + profile management
 - Academic/infrastructure master data APIs
 - Timetable generation + approval + reports
@@ -14,7 +15,7 @@ Node.js + Express + PostgreSQL implementation for:
 - Frontend: HTML + Bootstrap + Vanilla JS
 - Backend: Node.js + Express
 - Database: PostgreSQL
-- Auth: `bcryptjs` + JWT
+- Auth: `bcryptjs` + JWT + Nodemailer SMTP
 
 ## Project Structure
 ```text
@@ -74,6 +75,14 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/smart_scheduler
 JWT_SECRET=replace_with_a_secure_random_secret
 JWT_EXPIRES_IN=30m
 LOGIN_OTP_TOKEN_EXPIRES_IN=10m
+PASSWORD_RESET_OTP_EXPIRES_MINUTES=5
+PASSWORD_RESET_OTP_MAX_ATTEMPTS=5
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_smtp_user@example.com
+SMTP_PASS=your_smtp_password
+SMTP_FROM=no-reply@example.com
 CORS_ORIGIN=*
 ```
 
@@ -84,10 +93,10 @@ CORS_ORIGIN=*
 - `GET /api/auth/signup-options`
 - `POST /api/auth/signup`
 - `POST /api/auth/login`
-- `POST /api/auth/verify-otp`
+- `POST /api/auth/verify-login-otp`
 - `POST /api/auth/resend-otp`
 - `POST /api/auth/forgot-password`
-- `POST /api/auth/verify-reset-token`
+- `POST /api/auth/verify-otp`
 - `POST /api/auth/reset-password`
 
 ### Profile
@@ -128,6 +137,7 @@ Resources:
 
 ## OTP Behavior
 - In development mode, login/resend response includes `otp_preview`.
+- In development mode, forgot-password response includes `otp_preview` for easier local testing.
 - In production mode, `otp_preview` is hidden.
 
 ## Notes
@@ -138,7 +148,7 @@ Resources:
 - Selected departments are stored in `faculty_departments`.
 - Selected subjects for registered users are stored in `faculty_subjects` using `faculty_user_id`.
 - Login access is restricted to `Admin` role.
-- Forgot password uses a reset token with 10-minute expiry stored in `password_reset_tokens`.
+- Forgot password uses `password_reset_otps` with 5-minute expiry, attempt limiting, and one-time usage.
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).
 - Unique constraints in `timetable_entries` enforce no faculty/classroom/section clashes.
 - `POST /api/master/faculty` is restricted to users with `Admin` role.

@@ -55,7 +55,7 @@ const verifyResetOtpValidator = [
 const resetPasswordValidator = [
   body("email").trim().isEmail(),
   body("new_password").isLength({ min: 8 }),
-  body("confirm_password").notEmpty(),
+  body("confirm_password").optional().notEmpty(),
   validateRequest,
 ];
 
