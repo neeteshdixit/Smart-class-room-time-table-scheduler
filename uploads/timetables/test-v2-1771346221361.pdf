@@ -1,0 +1,105 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length 1733 >>
+stream
+BT
+/F1 10 Tf
+48 770 Td
+13 TL
+(Smart Classroom Timetable) Tj
+T*
+(Version: test v2) Tj
+T*
+(Semester ID: 1) Tj
+T*
+(Generated At: 2026-02-17T16:37:01.276Z) Tj
+T*
+(Assigned Entries: 27) Tj
+T*
+(Conflicts: 0) Tj
+T*
+(------------------------------) Tj
+T*
+(Section | Subject | Faculty | Room | Day | Slot) Tj
+T*
+(A | Cso | Mr Ashish Yadav | 204 | D1 | #1) Tj
+T*
+(A | Cso | Mr Ashish Yadav | 204 | D1 | #2) Tj
+T*
+(A | Cso | Mr Ashish Yadav | 204 | D1 | #3) Tj
+T*
+(A | Java | Ms Anchal Bhatt | 204 | D1 | #4) Tj
+T*
+(A | Java | Ms Anchal Bhatt | 204 | D1 | #5) Tj
+T*
+(A | Java | Ms Anchal Bhatt | 204 | D1 | #6) Tj
+T*
+(A | Numerical Methods | Mr Naveen | 204 | D2 | #1) Tj
+T*
+(A | Numerical Methods | Mr Naveen | 204 | D2 | #2) Tj
+T*
+(A | Numerical Methods | Mr Naveen | 204 | D2 | #3) Tj
+T*
+(B | Java | Ms Anchal Bhatt | 205 | D1 | #1) Tj
+T*
+(B | Java | Ms Anchal Bhatt | 205 | D1 | #2) Tj
+T*
+(B | Java | Ms Anchal Bhatt | 205 | D1 | #3) Tj
+T*
+(B | Cso | Mr Ashish Yadav | 205 | D1 | #4) Tj
+T*
+(B | Cso | Mr Ashish Yadav | 205 | D1 | #5) Tj
+T*
+(B | Cso | Mr Ashish Yadav | 205 | D1 | #6) Tj
+T*
+(B | Numerical Methods | Mr Naveen | 204 | D2 | #4) Tj
+T*
+(B | Numerical Methods | Mr Naveen | 204 | D2 | #5) Tj
+T*
+(B | Numerical Methods | Mr Naveen | 204 | D2 | #6) Tj
+T*
+(C | Numerical Methods | Mr Naveen | 206 | D1 | #1) Tj
+T*
+(C | Numerical Methods | Mr Naveen | 206 | D1 | #2) Tj
+T*
+(C | Numerical Methods | Mr Naveen | 206 | D1 | #3) Tj
+T*
+(C | Cso | Mr Ashish Yadav | 205 | D2 | #1) Tj
+T*
+(C | Cso | Mr Ashish Yadav | 205 | D2 | #2) Tj
+T*
+(C | Cso | Mr Ashish Yadav | 205 | D2 | #3) Tj
+T*
+(C | Java | Ms Anchal Bhatt | 205 | D2 | #4) Tj
+T*
+(C | Java | Ms Anchal Bhatt | 205 | D2 | #5) Tj
+T*
+(C | Java | Ms Anchal Bhatt | 205 | D2 | #6) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2096
+%%EOF

@@ -60,7 +60,7 @@ const state = {
   activePanel: "summaryPanel",
   activityLoaded: false,
   currentFormResource: null,
-  history: { page: 1, limit: 8, total: 0, q: "" },
+  history: { page: 1, limit: 8, total: 0, q: "", latestTimetableId: null },
   activity: { page: 1, limit: 10, total: 0, q: "" },
   info: { resource: null, page: 1, limit: 8, total: 0, q: "", rows: [] },
   timetableView: { detail: null, sectionId: null },
@@ -83,6 +83,7 @@ const entityConfig = {
   departments: {
     title: "Departments",
     endpoint: "/departments",
+    fallbackEndpoint: "/master/departments",
     countKey: "departments",
     tone: "entity-tone-departments",
     addLabel: "Add Department",
@@ -98,6 +99,7 @@ const entityConfig = {
   branches: {
     title: "Branches",
     endpoint: "/branches",
+    fallbackEndpoint: "/master/branches",
     countKey: "branches",
     tone: "entity-tone-branches",
     addLabel: "Add Branch",
@@ -113,6 +115,7 @@ const entityConfig = {
   sections: {
     title: "Sections",
     endpoint: "/sections",
+    fallbackEndpoint: "/master/sections",
     countKey: "sections",
     tone: "entity-tone-sections",
     addLabel: "Add Section",
@@ -215,6 +218,7 @@ const entityConfig = {
   faculty: {
     title: "Faculty",
     endpoint: "/faculty",
+    fallbackEndpoint: "/master/faculty",
     countKey: "faculty",
     tone: "entity-tone-faculty",
     addLabel: "Add Faculty",
@@ -234,6 +238,7 @@ const entityConfig = {
   subjects: {
     title: "Subjects",
     endpoint: "/subjects",
+    fallbackEndpoint: "/master/subjects",
     countKey: "subjects",
     tone: "entity-tone-subjects",
     addLabel: "Add Subject",
@@ -269,6 +274,7 @@ const entityConfig = {
   semesters: {
     title: "Semesters",
     endpoint: "/semesters",
+    fallbackEndpoint: "/master/semesters",
     countKey: "semesters",
     tone: "entity-tone-semesters",
     addLabel: "Add Semester",
@@ -693,6 +699,17 @@ async function fetchList(endpoint, params = {}) {
   return apiRequest(`${endpoint}${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
 }
 
+async function fetchListWithFallback(endpoint, fallbackEndpoint, params = {}) {
+  try {
+    return await fetchList(endpoint, params);
+  } catch (err) {
+    if (!fallbackEndpoint) {
+      throw err;
+    }
+    return fetchList(fallbackEndpoint, params);
+  }
+}
+
 async function getFormOptions(resourceKey) {
   const config = entityConfig[resourceKey];
   if (!config?.formFields) {
@@ -705,13 +722,22 @@ async function getFormOptions(resourceKey) {
   await Promise.all(
     keys.map(async (key) => {
       if (key === "departments") {
-        const result = await fetchList("/departments", { page: 1, limit: 200 });
+        const result = await fetchListWithFallback("/departments", "/master/departments", {
+          page: 1,
+          limit: 200,
+        });
         optionMap.departments = result.data;
       } else if (key === "branches") {
-        const result = await fetchList("/branches", { page: 1, limit: 300 });
+        const result = await fetchListWithFallback("/branches", "/master/branches", {
+          page: 1,
+          limit: 300,
+        });
         optionMap.branches = result.data;
       } else if (key === "semesters") {
-        const result = await fetchList("/semesters", { page: 1, limit: 300 });
+        const result = await fetchListWithFallback("/semesters", "/master/semesters", {
+          page: 1,
+          limit: 300,
+        });
         optionMap.semesters = result.data;
       } else if (key === "blocks") {
         const result = await fetchList("/master/blocks", { page: 1, limit: 300 });
@@ -949,7 +975,11 @@ async function loadEntityInfo() {
   const config = entityConfig[resource];
   if (!config || !entityInfoBody) return;
 
-  const result = await fetchList(config.endpoint, { page, limit, q });
+  const result = await fetchListWithFallback(config.endpoint, config.fallbackEndpoint, {
+    page,
+    limit,
+    q,
+  });
   state.info.total = result.pagination.total;
   state.info.rows = result.data;
 
@@ -1012,7 +1042,10 @@ function exportEntityInfoCsv() {
 
 async function loadSemesterOptionsForGenerator() {
   if (!semesterSelect) return;
-  const semesters = await fetchList("/semesters", { page: 1, limit: 200 });
+  const semesters = await fetchListWithFallback("/semesters", "/master/semesters", {
+    page: 1,
+    limit: 200,
+  });
   const options = semesters.data
     .map(
       (row) =>
@@ -1034,6 +1067,7 @@ async function loadTimetableHistory() {
   });
 
   state.history.total = result.pagination.total;
+  state.history.latestTimetableId = Number(result.data?.[0]?.timetable_id || 0) || null;
 
   renderTableRows(
     timetableHistoryBody,
@@ -1142,6 +1176,10 @@ function switchPanel(panelId) {
 
   if (panelId === "activityPanel" && !state.activityLoaded) {
     withLoading(loadActivityLog).catch(handleRequestError);
+  }
+
+  if (panelId === "timetablePanel" && !state.timetableView.detail && state.history.latestTimetableId) {
+    withLoading(() => loadTimetableDetails(state.history.latestTimetableId)).catch(handleRequestError);
   }
 }
 
@@ -1415,6 +1453,7 @@ if (activityList) {
 
 async function initializeDashboard() {
   hideAlert(dashboardAlertId);
+  renderTimetablePlaceholder();
 
   await withLoading(async () => {
     const results = await Promise.allSettled([

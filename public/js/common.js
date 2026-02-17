@@ -1,5 +1,37 @@
-const API_BASE = "/api";
+const DEFAULT_API_BASE = "/api";
+const API_BASE_STORAGE_KEY = "api_base_url";
 const AUTH_STORAGE_KEY = "auth_token";
+let activeApiBase = localStorage.getItem(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE;
+
+function normalizeApiBase(value) {
+  const base = String(value || "").trim();
+  if (!base) return DEFAULT_API_BASE;
+  return base.endsWith("/") ? base.slice(0, -1) : base;
+}
+
+function getApiBaseCandidates() {
+  const candidates = [normalizeApiBase(activeApiBase), DEFAULT_API_BASE];
+  const hostname = window.location.hostname || "localhost";
+  candidates.push(`http://${hostname}:5000/api`);
+  if (hostname !== "127.0.0.1") {
+    candidates.push("http://127.0.0.1:5000/api");
+  }
+  if (hostname !== "localhost") {
+    candidates.push("http://localhost:5000/api");
+  }
+
+  return [...new Set(candidates.map(normalizeApiBase))];
+}
+
+function setActiveApiBase(base) {
+  activeApiBase = normalizeApiBase(base);
+  localStorage.setItem(API_BASE_STORAGE_KEY, activeApiBase);
+}
+
+function buildApiUrl(apiBase, endpoint) {
+  const path = String(endpoint || "").startsWith("/") ? endpoint : `/${endpoint || ""}`;
+  return `${normalizeApiBase(apiBase)}${path}`;
+}
 
 function getAuthToken() {
   return localStorage.getItem(AUTH_STORAGE_KEY);
@@ -23,15 +55,42 @@ function authHeaders(extra = {}) {
 }
 
 async function apiRequest(endpoint, options = {}) {
-  const response = await fetch(`${API_BASE}${endpoint}`, options);
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = data.message || "Request failed";
-    const error = new Error(message);
-    error.validationErrors = Array.isArray(data.errors) ? data.errors : [];
-    throw error;
+  const candidates = getApiBaseCandidates();
+  let lastError = null;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const base = candidates[index];
+    const isLast = index === candidates.length - 1;
+
+    try {
+      const response = await fetch(buildApiUrl(base, endpoint), options);
+      const data = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        setActiveApiBase(base);
+        return data;
+      }
+
+      // Try the next candidate when current base likely does not host API routes.
+      if (!isLast && [404, 502, 503, 504].includes(response.status)) {
+        continue;
+      }
+
+      const message = data.message || "Request failed";
+      const error = new Error(message);
+      error.validationErrors = Array.isArray(data.errors) ? data.errors : [];
+      error.status = response.status;
+      throw error;
+    } catch (error) {
+      lastError = error;
+      if (!isLast && error.name === "TypeError") {
+        continue;
+      }
+      throw error;
+    }
   }
-  return data;
+
+  throw lastError || new Error("Request failed");
 }
 
 function showAlert(containerId, message, type = "danger") {
@@ -59,7 +118,7 @@ async function logout() {
   try {
     const token = getAuthToken();
     if (token) {
-      await fetch(`${API_BASE}/logout`, {
+      await apiRequest("/logout", {
         method: "POST",
         headers: authHeaders(),
       });

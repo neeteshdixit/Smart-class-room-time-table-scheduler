@@ -548,9 +548,12 @@ router.get("/", authRequired, async (req, res, next) => {
   }
 });
 
-router.get("/:id(\\d+)", authRequired, async (req, res, next) => {
+router.get("/:id", authRequired, async (req, res, next) => {
   try {
     const timetableId = Number(req.params.id);
+    if (!Number.isInteger(timetableId) || timetableId <= 0) {
+      return res.status(404).json({ message: "Timetable not found" });
+    }
     const detail = await fetchTimetableDetails(timetableId);
     if (!detail) {
       return res.status(404).json({ message: "Timetable not found" });
