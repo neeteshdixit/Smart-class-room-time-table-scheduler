@@ -181,6 +181,96 @@ h6,
   margin-right: 6px;
 }
 
+.dashboard-nav-links .dashboard-tab-link {
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-weight: 600;
+}
+
+.dashboard-nav-links .dashboard-tab-link:hover,
+.dashboard-nav-links .dashboard-tab-link:focus {
+  color: #fff;
+}
+
+.dashboard-nav-links .dashboard-tab-link.active {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 0.4rem;
+}
+
+.dashboard-panel {
+  animation: fade-in 0.18s ease-in;
+}
+
+.entity-card {
+  border-radius: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+  padding: 1rem;
+  height: 100%;
+}
+
+.entity-tone-departments {
+  background: linear-gradient(145deg, #eff6ff, #dbeafe);
+}
+
+.entity-tone-branches {
+  background: linear-gradient(145deg, #ecfeff, #cffafe);
+}
+
+.entity-tone-sections {
+  background: linear-gradient(145deg, #f0fdf4, #dcfce7);
+}
+
+.entity-tone-faculty {
+  background: linear-gradient(145deg, #fff7ed, #ffedd5);
+}
+
+.entity-tone-subjects {
+  background: linear-gradient(145deg, #fefce8, #fef3c7);
+}
+
+.entity-tone-semesters {
+  background: linear-gradient(145deg, #f5f3ff, #ede9fe);
+}
+
+.entity-count {
+  min-width: 2.2rem;
+  text-align: center;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.1);
+  color: #0f172a;
+  font-weight: 700;
+  padding: 0.15rem 0.6rem;
+}
+
+.table-search-input {
+  max-width: 260px;
+}
+
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(248, 250, 252, 0.76);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  border-radius: 12px;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 768px) {
   .hero-banner {
     border-radius: 14px;
@@ -188,5 +278,9 @@ h6,
 
   .section-heading {
     font-size: 1.4rem;
+  }
+
+  .table-search-input {
+    max-width: 100%;
   }
 }

@@ -157,11 +157,11 @@ async function findDepartmentById(departmentId, db) {
   return result.rows[0] || null;
 }
 
-async function getDepartmentSemesterId(departmentId, db) {
+async function getDepartmentSemesterDetails(departmentId, db) {
   const conn = getDb(db);
 
   const directSemester = await conn.query(
-    `SELECT s.id
+    `SELECT s.id, s.branch_id
      FROM semesters s
      JOIN branches b ON b.id = s.branch_id
      WHERE b.department_id = $1
@@ -170,17 +170,23 @@ async function getDepartmentSemesterId(departmentId, db) {
     [departmentId]
   );
   if (directSemester.rowCount > 0) {
-    return directSemester.rows[0].id;
+    return {
+      semesterId: directSemester.rows[0].id,
+      branchId: directSemester.rows[0].branch_id,
+    };
   }
 
   const anySemester = await conn.query(
-    `SELECT id
+    `SELECT id, branch_id
      FROM semesters
      ORDER BY id
      LIMIT 1`
   );
   if (anySemester.rowCount > 0) {
-    return anySemester.rows[0].id;
+    return {
+      semesterId: anySemester.rows[0].id,
+      branchId: anySemester.rows[0].branch_id,
+    };
   }
 
   const department = await findDepartmentById(departmentId, conn);
@@ -232,7 +238,10 @@ async function getDepartmentSemesterId(departmentId, db) {
     [buildAcademicYearLabel(), branchId]
   );
 
-  return insertedSemester.rows[0].id;
+  return {
+    semesterId: insertedSemester.rows[0].id,
+    branchId,
+  };
 }
 
 async function createSubjectByName(subjectName, departmentId, db) {
@@ -243,7 +252,7 @@ async function createSubjectByName(subjectName, departmentId, db) {
     throw new Error("At least one department is required before creating new subjects.");
   }
 
-  const semesterId = await getDepartmentSemesterId(departmentId, conn);
+  const { semesterId, branchId } = await getDepartmentSemesterDetails(departmentId, conn);
   const codeBase = buildCodeBase(normalized, "SUB", 40);
 
   for (let attempt = 0; attempt < 1000; attempt += 1) {
@@ -252,11 +261,11 @@ async function createSubjectByName(subjectName, departmentId, db) {
     const subjectCode = `${trimmedBase}${suffix}`;
 
     const result = await conn.query(
-      `INSERT INTO subjects (subject_name, subject_code, department_id, semester_id, subject_type)
-       VALUES ($1, $2, $3, $4, 'Theory')
-       ON CONFLICT (subject_code) DO NOTHING
+      `INSERT INTO subjects (subject_name, subject_code, department_id, branch_id, semester_id, subject_type)
+       VALUES ($1, $2, $3, $4, $5, 'Theory')
+       ON CONFLICT DO NOTHING
        RETURNING id, subject_name, subject_code`,
-      [normalized, subjectCode, departmentId, semesterId]
+      [normalized, subjectCode, departmentId, branchId, semesterId]
     );
 
     if (result.rowCount > 0) {

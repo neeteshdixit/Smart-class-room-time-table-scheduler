@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS faculty_departments (
 CREATE TABLE IF NOT EXISTS branches (
     id SERIAL PRIMARY KEY,
     branch_name VARCHAR(120) NOT NULL,
-    branch_code VARCHAR(25) UNIQUE NOT NULL,
+    branch_code VARCHAR(25) NOT NULL,
     department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
     program_type VARCHAR(10) NOT NULL CHECK (program_type IN ('UG', 'PG')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -108,8 +108,9 @@ CREATE TABLE IF NOT EXISTS semesters (
 CREATE TABLE IF NOT EXISTS sections (
     id SERIAL PRIMARY KEY,
     section_name VARCHAR(20) NOT NULL,
+    branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
     semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
-    student_strength INTEGER NOT NULL CHECK (student_strength > 0),
+    student_strength INTEGER NOT NULL DEFAULT 60 CHECK (student_strength > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (section_name, semester_id)
 );
@@ -134,8 +135,9 @@ CREATE TABLE IF NOT EXISTS faculty (
 CREATE TABLE IF NOT EXISTS subjects (
     id SERIAL PRIMARY KEY,
     subject_name VARCHAR(140) NOT NULL,
-    subject_code VARCHAR(40) UNIQUE NOT NULL,
+    subject_code VARCHAR(40) NOT NULL,
     department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
+    branch_id INTEGER REFERENCES branches(id) ON DELETE RESTRICT,
     semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
     subject_type VARCHAR(20) NOT NULL CHECK (subject_type IN ('Theory', 'Practical', 'Both')),
     theory_hours_per_week INTEGER NOT NULL DEFAULT 0 CHECK (theory_hours_per_week >= 0),
@@ -144,6 +146,95 @@ CREATE TABLE IF NOT EXISTS subjects (
     syllabus_file_url TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'branches_branch_code_key'
+    ) THEN
+        ALTER TABLE branches
+        DROP CONSTRAINT branches_branch_code_key;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'sections'
+          AND column_name = 'branch_id'
+    ) THEN
+        ALTER TABLE sections
+        ADD COLUMN branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE;
+    END IF;
+
+    ALTER TABLE sections
+    ALTER COLUMN student_strength SET DEFAULT 60;
+END $$;
+
+UPDATE sections s
+SET branch_id = sem.branch_id
+FROM semesters sem
+WHERE s.semester_id = sem.id
+  AND s.branch_id IS NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sections
+        WHERE branch_id IS NULL
+    ) THEN
+        ALTER TABLE sections
+        ALTER COLUMN branch_id SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'subjects'
+          AND column_name = 'branch_id'
+    ) THEN
+        ALTER TABLE subjects
+        ADD COLUMN branch_id INTEGER REFERENCES branches(id) ON DELETE RESTRICT;
+    END IF;
+END $$;
+
+UPDATE subjects s
+SET branch_id = sem.branch_id
+FROM semesters sem
+WHERE s.semester_id = sem.id
+  AND s.branch_id IS NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM subjects
+        WHERE branch_id IS NULL
+    ) THEN
+        ALTER TABLE subjects
+        ALTER COLUMN branch_id SET NOT NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'subjects_subject_code_key'
+    ) THEN
+        ALTER TABLE subjects
+        DROP CONSTRAINT subjects_subject_code_key;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS faculty_subjects (
     id SERIAL PRIMARY KEY,
@@ -240,6 +331,14 @@ CREATE TABLE IF NOT EXISTS timetables (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS timetable_history (
+    id SERIAL PRIMARY KEY,
+    version_name VARCHAR(80) NOT NULL,
+    semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
+    pdf_path TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS timetable_entries (
     id SERIAL PRIMARY KEY,
     timetable_id INTEGER NOT NULL REFERENCES timetables(id) ON DELETE CASCADE,
@@ -280,6 +379,16 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expiry_time ON password_res
 CREATE UNIQUE INDEX IF NOT EXISTS uq_single_admin_user
 ON faculty_users ((LOWER(role)))
 WHERE LOWER(role) = 'admin';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_name
+ON departments ((LOWER(department_name)));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_branches_name_per_department
+ON branches (department_id, (LOWER(branch_name)));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_branches_code_per_department
+ON branches (department_id, (LOWER(branch_code)));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sections_name_per_branch
+ON sections (branch_id, (LOWER(section_name)));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_code_per_branch
+ON subjects (branch_id, (LOWER(subject_code)));
 CREATE INDEX IF NOT EXISTS idx_faculty_departments_faculty_user_id ON faculty_departments(faculty_user_id);
 CREATE INDEX IF NOT EXISTS idx_faculty_departments_department_id ON faculty_departments(department_id);
 CREATE INDEX IF NOT EXISTS idx_faculty_subjects_faculty_id ON faculty_subjects(faculty_id);
@@ -292,4 +401,5 @@ CREATE INDEX IF NOT EXISTS idx_timetable_entries_timeslot_id ON timetable_entrie
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_section_id ON timetable_entries(section_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_subject_id ON timetable_entries(subject_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_faculty_id ON timetable_entries(faculty_id);
+CREATE INDEX IF NOT EXISTS idx_timetable_history_created_at ON timetable_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recent_activity_created_at ON recent_activity(created_at DESC);

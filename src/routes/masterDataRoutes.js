@@ -27,8 +27,8 @@ const resourceConfig = {
   },
   sections: {
     table: "sections",
-    fields: ["section_name", "semester_id", "student_strength"],
-    required: ["section_name", "semester_id", "student_strength"],
+    fields: ["section_name", "branch_id", "semester_id", "student_strength"],
+    required: ["section_name", "branch_id", "semester_id"],
   },
   faculty: {
     table: "faculty",
@@ -65,6 +65,7 @@ const resourceConfig = {
       "subject_name",
       "subject_code",
       "department_id",
+      "branch_id",
       "semester_id",
       "subject_type",
       "theory_hours_per_week",
@@ -72,7 +73,7 @@ const resourceConfig = {
       "total_hours_semester",
       "syllabus_file_url",
     ],
-    required: ["subject_name", "subject_code", "department_id", "semester_id", "subject_type"],
+    required: ["subject_name", "subject_code", "department_id", "branch_id", "semester_id", "subject_type"],
   },
   "faculty-subjects": {
     table: "faculty_subjects",

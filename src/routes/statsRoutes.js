@@ -11,6 +11,8 @@ async function getCount(tableName) {
 
 router.get("/", authRequired, async (req, res, next) => {
   try {
+    const includeActivity = String(req.query.include_activity || "false").toLowerCase() === "true";
+
     const [
       departments,
       branches,
@@ -24,12 +26,15 @@ router.get("/", authRequired, async (req, res, next) => {
       timetableVersions,
       avgWorkloadResult,
       roomUtilizationResult,
-      recentActivityResult,
     ] = await Promise.all([
       getCount("departments"),
       getCount("branches"),
       getCount("sections"),
-      getCount("faculty"),
+      pool.query(
+        `SELECT COUNT(*)::int AS total
+         FROM faculty_users
+         WHERE LOWER(role) = 'faculty'`
+      ).then((result) => result.rows[0].total),
       getCount("classrooms"),
       getCount("laboratories"),
       getCount("blocks"),
@@ -52,13 +57,16 @@ router.get("/", authRequired, async (req, res, next) => {
            ) AS room_utilization_percent
          FROM timetable_entries`
       ),
-      pool.query(
-        `SELECT action_type, details, created_at
-         FROM recent_activity
-         ORDER BY created_at DESC
-         LIMIT 10`
-      ),
     ]);
+
+    const recentActivityResult = includeActivity
+      ? await pool.query(
+          `SELECT action_type, details, created_at
+           FROM recent_activity
+           ORDER BY created_at DESC
+           LIMIT 10`
+        )
+      : { rows: [] };
 
     return res.json({
       totals: {
@@ -77,7 +85,7 @@ router.get("/", authRequired, async (req, res, next) => {
         average_faculty_workload: Number(avgWorkloadResult.rows[0].average_workload),
         room_utilization_percent: Number(roomUtilizationResult.rows[0].room_utilization_percent),
       },
-      recent_activity: recentActivityResult.rows,
+      ...(includeActivity ? { recent_activity: recentActivityResult.rows } : {}),
     });
   } catch (err) {
     return next(err);
@@ -85,4 +93,3 @@ router.get("/", authRequired, async (req, res, next) => {
 });
 
 module.exports = router;
-

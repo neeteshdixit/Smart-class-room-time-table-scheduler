@@ -55,10 +55,22 @@ function requireAuth() {
   }
 }
 
-function logout() {
-  clearAuthToken();
-  sessionStorage.removeItem("login_token");
-  window.location.href = "/login.html";
+async function logout() {
+  try {
+    const token = getAuthToken();
+    if (token) {
+      await fetch(`${API_BASE}/logout`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+    }
+  } catch (err) {
+    // ignore logout API failures and continue client-side sign-out
+  } finally {
+    clearAuthToken();
+    sessionStorage.removeItem("login_token");
+    window.location.href = "/login.html";
+  }
 }
 
 function formatDate(dateValue) {
