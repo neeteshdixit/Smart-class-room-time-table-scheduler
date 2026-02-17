@@ -12,6 +12,10 @@ function parseBoolean(value) {
     .toLowerCase() === "true";
 }
 
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
 function getTransporter() {
   if (transporter) {
     return transporter;
@@ -53,16 +57,46 @@ async function sendPasswordResetOtpEmail(email, otpCode) {
     .trim()
     .toLowerCase();
 
-  if (!toEmail || !fromAddress) {
-    throw buildMailerError("SMTP sender/recipient email is missing.");
+  if (!fromAddress) {
+    throw buildMailerError("SMTP sender email is missing. Set SMTP_FROM (or SMTP_USER) in .env.");
   }
 
-  await getTransporter().sendMail({
-    from: fromAddress,
-    to: toEmail,
-    subject: "Password Reset OTP",
-    text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
-  });
+  if (!isValidEmail(fromAddress)) {
+    throw buildMailerError("SMTP sender email is invalid. Check SMTP_FROM/SMTP_USER in .env.");
+  }
+
+  if (!toEmail) {
+    throw buildMailerError("Recipient email is missing for this account. Please update account email and retry.");
+  }
+
+  if (!isValidEmail(toEmail)) {
+    throw buildMailerError("Recipient email is invalid for this account. Please update account email and retry.");
+  }
+
+  try {
+    await getTransporter().sendMail({
+      from: fromAddress,
+      to: toEmail,
+      subject: "Password Reset OTP",
+      text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
+    });
+  } catch (err) {
+    const smtpMessage = String(err?.message || "");
+
+    if (/invalid login|badcredentials|username and password not accepted/i.test(smtpMessage)) {
+      throw buildMailerError(
+        "SMTP authentication failed. Update SMTP_USER and SMTP_PASS in .env (use a valid Gmail App Password)."
+      );
+    }
+
+    if (/econnection|etimedout|enotfound|eai_again|socket/i.test(smtpMessage)) {
+      throw buildMailerError(
+        "SMTP connection failed. Check SMTP_HOST/SMTP_PORT and internet access, then retry."
+      );
+    }
+
+    throw buildMailerError("Failed to send OTP email. Verify SMTP configuration and try again.");
+  }
 }
 
 module.exports = {
