@@ -36,7 +36,9 @@ async function checkAdmin(req, res, next) {
 
 async function signup(req, res, next) {
   try {
-    const response = await authService.signup(req.body, req.user || null, req.file || null);
+    const response = await authService.signup(req.body, req.user || null, req.file || null, {
+      allowAdminRole: false,
+    });
     return res.status(201).json(response);
   } catch (err) {
     return handleError(err, next, res);

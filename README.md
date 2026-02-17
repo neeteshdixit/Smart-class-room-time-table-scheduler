@@ -90,8 +90,10 @@ CORS_ORIGIN=*
 
 ### Authentication
 - `GET /api/auth/signup-meta`
+- `GET /api/auth/check-admin`
 - `GET /api/auth/signup-options`
 - `POST /api/auth/signup`
+- `POST /api/auth/admin-signup`
 - `POST /api/auth/login`
 - `POST /api/auth/verify-login-otp`
 - `POST /api/auth/resend-otp`
@@ -102,6 +104,7 @@ CORS_ORIGIN=*
 ### Profile
 - `GET /api/profile`
 - `PUT /api/profile`
+- `DELETE /api/profile/delete-account`
 
 ### Dashboard
 - `GET /api/stats`
@@ -142,12 +145,13 @@ Resources:
 
 ## Notes
 - Roles supported: `ADMIN`, `FACULTY`, `USER`.
-- `ADMIN` can only be created by an already logged-in existing `ADMIN` (via JWT).
-- Faculty and User can self-register but cannot create admin accounts.
+- `ADMIN` signup is allowed only when no admin exists; once the admin account is deleted, admin signup is available again.
+- Faculty and User can self-register through standard signup.
 - Signup accepts `multipart/form-data` with `profile_photo` file upload.
 - Selected departments are stored in `faculty_departments`.
 - Selected subjects for registered users are stored in `faculty_subjects` using `faculty_user_id`.
 - Login access is restricted to `Admin` role.
+- Account deletion requires JWT auth + password confirmation and writes an entry in `recent_activity`.
 - Forgot password uses `password_reset_otps` with 5-minute expiry, attempt limiting, and one-time usage.
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).
 - Unique constraints in `timetable_entries` enforce no faculty/classroom/section clashes.

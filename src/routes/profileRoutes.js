@@ -131,7 +131,7 @@ router.delete(
   "/delete-account",
   authRequired,
   [
-    body("password").isLength({ min: 8 }),
+    body("password").notEmpty(),
     body("confirm_password").notEmpty(),
     validateRequest,
   ],

@@ -123,14 +123,19 @@ async function getSignupOptions() {
   return { departments, subjects };
 }
 
-async function signup(payload, actorUser = null, uploadedFile = null) {
+async function signup(payload, actorUser = null, uploadedFile = null, options = {}) {
   if (payload.password !== payload.confirm_password) {
     throw buildError(400, "Password and confirm password do not match");
   }
 
+  const allowAdminRole = options.allowAdminRole !== false;
   const role = normalizeRole(payload.role);
   const departmentIds = parseIdArray(payload.department_ids);
   const subjectIds = parseIdArray(payload.subject_ids);
+
+  if (role === ROLE_ADMIN && !allowAdminRole) {
+    throw buildError(403, "Use admin signup endpoint to create an admin account.");
+  }
 
   if (role === ROLE_FACULTY && departmentIds.length === 0) {
     throw buildError(400, "At least one department must be selected for faculty registration.");
@@ -237,7 +242,7 @@ async function adminSignup(payload, uploadedFile = null) {
     role: ROLE_ADMIN,
   };
 
-  return signup(adminPayload, null, uploadedFile);
+  return signup(adminPayload, null, uploadedFile, { allowAdminRole: true });
 }
 
 async function login(payload) {
