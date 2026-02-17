@@ -34,7 +34,7 @@
             <div class="card form-card">
               <div class="card-body p-4 p-md-5">
                 <h2 class="mb-3">Create Account</h2>
-                <p class="text-secondary">Upload photo, choose role, and select departments and subjects.</p>
+                <p class="text-secondary">Upload photo, choose role, and enter departments and subjects.</p>
                 <div id="signupAlert" class="alert alert-danger alert-inline"></div>
                 <form id="signupForm" class="row g-3" enctype="multipart/form-data">
                   <div class="col-md-4">
@@ -46,8 +46,21 @@
                     <input type="text" class="form-control" name="full_name" required />
                   </div>
                   <div class="col-md-8">
-                    <label class="form-label">Departments * (Ctrl/Cmd for multiple)</label>
-                    <select class="form-select" name="department_ids" id="departmentSelect" size="4" multiple></select>
+                    <label class="form-label" for="departmentTagInput">Departments *</label>
+                    <div class="tag-input-shell" id="departmentTags">
+                      <div class="tag-items" id="departmentTagsList"></div>
+                      <input
+                        type="text"
+                        class="tag-entry-input"
+                        id="departmentTagInput"
+                        list="departmentSuggestions"
+                        placeholder="Type a department and press Enter"
+                        autocomplete="off"
+                      />
+                    </div>
+                    <input type="hidden" name="department_names" id="departmentNamesInput" />
+                    <datalist id="departmentSuggestions"></datalist>
+                    <small class="text-secondary d-block mt-1">Use Enter or comma to add multiple departments.</small>
                   </div>
                   <div class="col-md-4">
                     <label class="form-label">Designation *</label>
@@ -111,8 +124,21 @@
                     <small id="adminRoleHelp" class="text-secondary d-block mt-1"></small>
                   </div>
                   <div class="col-md-4">
-                    <label class="form-label">Subjects Taught * (Ctrl/Cmd for multiple)</label>
-                    <select class="form-select" name="subject_ids" id="subjectSelect" size="4" multiple></select>
+                    <label class="form-label" for="subjectTagInput">Subjects Taught *</label>
+                    <div class="tag-input-shell" id="subjectTags">
+                      <div class="tag-items" id="subjectTagsList"></div>
+                      <input
+                        type="text"
+                        class="tag-entry-input"
+                        id="subjectTagInput"
+                        list="subjectSuggestions"
+                        placeholder="Type a subject and press Enter"
+                        autocomplete="off"
+                      />
+                    </div>
+                    <input type="hidden" name="subject_names" id="subjectNamesInput" />
+                    <datalist id="subjectSuggestions"></datalist>
+                    <small class="text-secondary d-block mt-1">Use Enter or comma to add multiple subjects.</small>
                     <small id="subjectCountHelp" class="text-secondary d-block mt-1">Selected subjects: 0</small>
                   </div>
                   <div class="col-md-4">

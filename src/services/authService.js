@@ -28,6 +28,8 @@ const {
   listSubjects,
   getDepartmentsByIds,
   getSubjectsByIds,
+  findOrCreateDepartmentByName,
+  findOrCreateSubjectByName,
 } = require("../models/academicLookupModel");
 const { addFacultyDepartments, addFacultyUserSubjects } = require("../models/facultyMappingModel");
 const { generateOtp, maskMobileNumber } = require("../utils/otp");
@@ -88,6 +90,37 @@ function parseIdArray(value) {
   return [];
 }
 
+function parseNameArray(value) {
+  let candidates = [];
+
+  if (Array.isArray(value)) {
+    candidates = value;
+  } else if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        candidates = parsed;
+      } else {
+        candidates = value.split(",");
+      }
+    } catch (err) {
+      candidates = value.split(",");
+    }
+  }
+
+  const unique = new Map();
+  candidates.forEach((entry) => {
+    const normalized = String(entry || "").trim().replace(/\s+/g, " ");
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (!unique.has(key)) {
+      unique.set(key, normalized);
+    }
+  });
+
+  return [...unique.values()];
+}
+
 function isAdminActor(actorUser) {
   return String(actorUser?.role || "").toLowerCase() === "admin";
 }
@@ -123,6 +156,10 @@ async function getSignupOptions() {
   return { departments, subjects };
 }
 
+async function getDepartments() {
+  return listDepartments();
+}
+
 async function signup(payload, actorUser = null, uploadedFile = null, options = {}) {
   if (payload.password !== payload.confirm_password) {
     throw buildError(400, "Password and confirm password do not match");
@@ -131,18 +168,20 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
   const allowAdminRole = options.allowAdminRole !== false;
   const role = normalizeRole(payload.role);
   const departmentIds = parseIdArray(payload.department_ids);
+  const departmentNames = parseNameArray(payload.department_names);
   const subjectIds = parseIdArray(payload.subject_ids);
+  const subjectNames = parseNameArray(payload.subject_names);
 
   if (role === ROLE_ADMIN && !allowAdminRole) {
     throw buildError(403, "Use admin signup endpoint to create an admin account.");
   }
 
-  if (role === ROLE_FACULTY && departmentIds.length === 0) {
-    throw buildError(400, "At least one department must be selected for faculty registration.");
+  if (role === ROLE_FACULTY && departmentIds.length === 0 && departmentNames.length === 0) {
+    throw buildError(400, "At least one department is required for faculty registration.");
   }
 
-  if (role === ROLE_FACULTY && subjectIds.length === 0) {
-    throw buildError(400, "At least one subject must be selected for faculty registration.");
+  if (role === ROLE_FACULTY && subjectIds.length === 0 && subjectNames.length === 0) {
+    throw buildError(400, "At least one subject is required for faculty registration.");
   }
 
   const client = await pool.connect();
@@ -172,22 +211,54 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
       }
     }
 
-    const [departments, subjects] = await Promise.all([
+    const [departmentsById, subjectsById] = await Promise.all([
       getDepartmentsByIds(departmentIds, client),
       getSubjectsByIds(subjectIds, client),
     ]);
 
-    if (departmentIds.length > 0 && departments.length !== departmentIds.length) {
+    if (departmentIds.length > 0 && departmentsById.length !== departmentIds.length) {
       throw buildError(400, "One or more selected departments are invalid.");
     }
 
-    if (subjectIds.length > 0 && subjects.length !== subjectIds.length) {
+    if (subjectIds.length > 0 && subjectsById.length !== subjectIds.length) {
       throw buildError(400, "One or more selected subjects are invalid.");
+    }
+
+    const departmentMap = new Map(departmentsById.map((department) => [department.id, department]));
+    for (const departmentName of departmentNames) {
+      const department = await findOrCreateDepartmentByName(departmentName, client);
+      departmentMap.set(department.id, department);
+    }
+    const resolvedDepartments = [...departmentMap.values()];
+    const resolvedDepartmentIds = resolvedDepartments.map((department) => department.id);
+
+    const subjectMap = new Map(subjectsById.map((subject) => [subject.id, subject]));
+    let subjectDepartmentId = resolvedDepartmentIds[0] || null;
+    if (!subjectDepartmentId && subjectNames.length > 0) {
+      const availableDepartments = await listDepartments(client);
+      subjectDepartmentId = availableDepartments[0]?.id || null;
+    }
+    for (const subjectName of subjectNames) {
+      if (!subjectDepartmentId) {
+        throw buildError(400, "At least one department is required before creating subjects.");
+      }
+      const subject = await findOrCreateSubjectByName(subjectName, subjectDepartmentId, client);
+      subjectMap.set(subject.id, subject);
+    }
+    const resolvedSubjects = [...subjectMap.values()];
+    const resolvedSubjectIds = resolvedSubjects.map((subject) => subject.id);
+
+    if (role === ROLE_FACULTY && resolvedDepartmentIds.length === 0) {
+      throw buildError(400, "At least one department is required for faculty registration.");
+    }
+
+    if (role === ROLE_FACULTY && resolvedSubjectIds.length === 0) {
+      throw buildError(400, "At least one subject is required for faculty registration.");
     }
 
     const passwordHash = await bcrypt.hash(payload.password, 10);
     const departmentText =
-      departments.length > 0 ? departments.map((d) => d.department_name).join(", ") : "General";
+      resolvedDepartments.length > 0 ? resolvedDepartments.map((d) => d.department_name).join(", ") : "General";
     const photoPath = uploadedFile ? `/uploads/profile-photos/${uploadedFile.filename}` : null;
 
     const user = await createFacultyUser(
@@ -201,8 +272,8 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
       client
     );
 
-    await addFacultyDepartments(user.id, departmentIds, client);
-    await addFacultyUserSubjects(user.id, subjectIds, client);
+    await addFacultyDepartments(user.id, resolvedDepartmentIds, client);
+    await addFacultyUserSubjects(user.id, resolvedSubjectIds, client);
 
     await client.query("COMMIT");
     await logActivity(user.id, "User Signup", `Registered faculty_id=${payload.faculty_id}, role=${role}`);
@@ -212,8 +283,10 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
       user: {
         ...user,
         profile_photo_path: photoPath,
-        department_ids: departmentIds,
-        subject_ids: subjectIds,
+        department_ids: resolvedDepartmentIds,
+        subject_ids: resolvedSubjectIds,
+        department_names: resolvedDepartments.map((department) => department.department_name),
+        subject_names: resolvedSubjects.map((subject) => subject.subject_name),
       },
     };
   } catch (err) {
@@ -467,6 +540,7 @@ module.exports = {
   getSignupMeta,
   checkAdminAvailability,
   getSignupOptions,
+  getDepartments,
   adminSignup,
   forgotPassword,
   resetPassword,

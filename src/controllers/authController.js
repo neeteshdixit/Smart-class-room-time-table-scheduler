@@ -25,6 +25,15 @@ async function getSignupOptions(req, res, next) {
   }
 }
 
+async function getDepartments(req, res, next) {
+  try {
+    const departments = await authService.getDepartments();
+    return res.json({ departments });
+  } catch (err) {
+    return handleError(err, next, res);
+  }
+}
+
 async function checkAdmin(req, res, next) {
   try {
     const response = await authService.checkAdminAvailability();
@@ -112,6 +121,7 @@ module.exports = {
   getSignupMeta,
   checkAdmin,
   getSignupOptions,
+  getDepartments,
   signup,
   adminSignup,
   login,
