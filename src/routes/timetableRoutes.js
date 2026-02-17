@@ -179,7 +179,9 @@ async function generateTimetableHandler(req, res, next) {
 
     if (slotsResult.rowCount === 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ message: "No time slots configured" });
+      return res.status(400).json({
+        message: "No time slots configured. Add time slots from Academic Data > Time Slots.",
+      });
     }
 
     if (roomsResult.rowCount === 0) {

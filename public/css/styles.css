@@ -235,6 +235,22 @@ h6,
   background: linear-gradient(145deg, #f5f3ff, #ede9fe);
 }
 
+.entity-tone-blocks {
+  background: linear-gradient(145deg, #eef2ff, #e0e7ff);
+}
+
+.entity-tone-classrooms {
+  background: linear-gradient(145deg, #f3f4f6, #e5e7eb);
+}
+
+.entity-tone-labs {
+  background: linear-gradient(145deg, #f0f9ff, #e0f2fe);
+}
+
+.entity-tone-timeslots {
+  background: linear-gradient(145deg, #ecfccb, #dcfce7);
+}
+
 .entity-count {
   min-width: 2.2rem;
   text-align: center;

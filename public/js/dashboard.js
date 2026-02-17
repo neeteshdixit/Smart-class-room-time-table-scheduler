@@ -61,7 +61,18 @@ const state = {
   info: { resource: null, page: 1, limit: 8, total: 0, q: "", rows: [] },
 };
 
-const entityOrder = ["departments", "branches", "sections", "faculty", "subjects", "semesters"];
+const entityOrder = [
+  "departments",
+  "branches",
+  "sections",
+  "blocks",
+  "classrooms",
+  "laboratories",
+  "time_slots",
+  "faculty",
+  "subjects",
+  "semesters",
+];
 
 const entityConfig = {
   departments: {
@@ -108,6 +119,93 @@ const entityConfig = {
     ],
     columns: ["ID", "Section", "Branch", "Semester"],
     mapRow: (row) => [row.id, row.section_name, row.branch_name || "-", `${row.semester_number} (${row.academic_year})`],
+  },
+  blocks: {
+    title: "Blocks",
+    endpoint: "/master/blocks",
+    countKey: "blocks",
+    tone: "entity-tone-blocks",
+    addLabel: "Add Block",
+    infoLabel: "See Blocks Info",
+    formFields: [
+      { name: "block_name", label: "Block Name", type: "text", required: true },
+      { name: "number_of_floors", label: "No. of Floors", type: "number", required: true, min: 1 },
+    ],
+    columns: ["ID", "Block", "Floors", "Created At"],
+    mapRow: (row) => [row.id, row.block_name, row.number_of_floors, formatDateTime(row.created_at)],
+  },
+  classrooms: {
+    title: "Classrooms",
+    endpoint: "/master/classrooms",
+    countKey: "classrooms",
+    tone: "entity-tone-classrooms",
+    addLabel: "Add Classroom",
+    infoLabel: "See Classrooms Info",
+    formFields: [
+      { name: "room_number", label: "Room Number", type: "text", required: true },
+      { name: "capacity", label: "Capacity", type: "number", required: true, min: 1 },
+      { name: "block_id", label: "Block", type: "select", optionsKey: "blocks", required: true },
+      { name: "floor_number", label: "Floor Number", type: "number", required: true, min: 0 },
+      {
+        name: "room_type",
+        label: "Room Type",
+        type: "select",
+        required: true,
+        staticOptions: [
+          { value: "Lecture", label: "Lecture" },
+          { value: "Lab", label: "Lab" },
+        ],
+      },
+    ],
+    columns: ["ID", "Room", "Capacity", "Block", "Floor", "Type"],
+    mapRow: (row) => [row.id, row.room_number, row.capacity, row.block_id, row.floor_number, row.room_type],
+  },
+  laboratories: {
+    title: "Labs",
+    endpoint: "/master/laboratories",
+    countKey: "labs",
+    tone: "entity-tone-labs",
+    addLabel: "Add Lab",
+    infoLabel: "See Labs Info",
+    formFields: [
+      { name: "lab_name", label: "Lab Name", type: "text", required: true },
+      { name: "department_id", label: "Department", type: "select", optionsKey: "departments", required: true },
+      { name: "capacity", label: "Capacity", type: "number", required: true, min: 1 },
+      { name: "equipment_type", label: "Equipment Type", type: "text" },
+      { name: "lab_duration_preference", label: "Preferred Duration (min)", type: "number", min: 1 },
+    ],
+    columns: ["ID", "Lab", "Department ID", "Capacity", "Equipment"],
+    mapRow: (row) => [row.id, row.lab_name, row.department_id, row.capacity, row.equipment_type || "-"],
+  },
+  time_slots: {
+    title: "Time Slots",
+    endpoint: "/master/time-slots",
+    countKey: "time_slots",
+    tone: "entity-tone-timeslots",
+    addLabel: "Add Time Slot",
+    infoLabel: "See Time Slots Info",
+    formFields: [
+      {
+        name: "day_of_week",
+        label: "Day",
+        type: "select",
+        required: true,
+        staticOptions: [
+          { value: "1", label: "Monday" },
+          { value: "2", label: "Tuesday" },
+          { value: "3", label: "Wednesday" },
+          { value: "4", label: "Thursday" },
+          { value: "5", label: "Friday" },
+          { value: "6", label: "Saturday" },
+          { value: "7", label: "Sunday" },
+        ],
+      },
+      { name: "slot_number", label: "Slot Number", type: "number", required: true, min: 1 },
+      { name: "start_time", label: "Start Time", type: "time", required: true },
+      { name: "end_time", label: "End Time", type: "time", required: true },
+    ],
+    columns: ["ID", "Day", "Slot #", "Start", "End"],
+    mapRow: (row) => [row.id, dayOfWeekLabel(row.day_of_week), row.slot_number, row.start_time, row.end_time],
   },
   faculty: {
     title: "Faculty",
@@ -192,6 +290,19 @@ function escapeHtml(value) {
 function formatDateTime(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString();
+}
+
+function dayOfWeekLabel(day) {
+  const map = {
+    1: "Monday",
+    2: "Tuesday",
+    3: "Wednesday",
+    4: "Thursday",
+    5: "Friday",
+    6: "Saturday",
+    7: "Sunday",
+  };
+  return map[Number(day)] || String(day || "-");
 }
 
 function updateLoadingState(delta) {
@@ -382,6 +493,9 @@ async function getFormOptions(resourceKey) {
       } else if (key === "semesters") {
         const result = await fetchList("/semesters", { page: 1, limit: 300 });
         optionMap.semesters = result.data;
+      } else if (key === "blocks") {
+        const result = await fetchList("/master/blocks", { page: 1, limit: 300 });
+        optionMap.blocks = result.data;
       }
     })
   );
@@ -420,6 +534,11 @@ function buildOptionsHtml(field, optionsByKey) {
             item.semester_number
           )} - ${escapeHtml(item.academic_year)} (${escapeHtml(item.branch_name)})</option>`
       )
+      .join("");
+  }
+  if (field.optionsKey === "blocks") {
+    return list
+      .map((item) => `<option value="${item.id}">${escapeHtml(item.block_name)} (Floors: ${escapeHtml(item.number_of_floors)})</option>`)
       .join("");
   }
   return "";
@@ -523,13 +642,21 @@ function normalizePayload(resourceKey, payload) {
   const toIntKeys = {
     branches: ["department_id"],
     sections: ["branch_id", "semester_id"],
+    blocks: ["number_of_floors"],
+    classrooms: ["capacity", "block_id", "floor_number"],
+    laboratories: ["department_id", "capacity", "lab_duration_preference"],
+    time_slots: ["day_of_week", "slot_number"],
     subjects: ["department_id", "branch_id", "semester_id"],
     semesters: ["branch_id", "semester_number"],
   };
 
   (toIntKeys[resourceKey] || []).forEach((key) => {
     if (converted[key] !== undefined) {
-      converted[key] = Number(converted[key]);
+      if (converted[key] === "") {
+        delete converted[key];
+      } else {
+        converted[key] = Number(converted[key]);
+      }
     }
   });
 
