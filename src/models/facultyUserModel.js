@@ -78,6 +78,17 @@ async function findBasicById(id) {
   return result.rows[0] || null;
 }
 
+async function findAuthById(id, db) {
+  const conn = getDb(db);
+  const result = await conn.query(
+    `SELECT id, faculty_id, full_name, email, role, password_hash
+     FROM faculty_users
+     WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
 async function findByEmail(email) {
   const result = await pool.query(
     `SELECT * FROM faculty_users
@@ -113,14 +124,27 @@ async function updateLastLogin(id) {
   await pool.query(`UPDATE faculty_users SET last_login = NOW() WHERE id = $1`, [id]);
 }
 
+async function deleteUserById(id, db) {
+  const conn = getDb(db);
+  const result = await conn.query(
+    `DELETE FROM faculty_users
+     WHERE id = $1
+     RETURNING id, faculty_id, full_name, email, role`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
 module.exports = {
   findDuplicateByFacultyEmailMobile,
   countAdmins,
   createFacultyUser,
   findByIdentifier,
   findBasicById,
+  findAuthById,
   findByEmail,
   findByEmailOrFacultyId,
   updatePasswordHash,
   updateLastLogin,
+  deleteUserById,
 };

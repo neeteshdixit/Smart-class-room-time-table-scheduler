@@ -25,9 +25,27 @@ async function getSignupOptions(req, res, next) {
   }
 }
 
+async function checkAdmin(req, res, next) {
+  try {
+    const response = await authService.checkAdminAvailability();
+    return res.json(response);
+  } catch (err) {
+    return handleError(err, next, res);
+  }
+}
+
 async function signup(req, res, next) {
   try {
     const response = await authService.signup(req.body, req.user || null, req.file || null);
+    return res.status(201).json(response);
+  } catch (err) {
+    return handleError(err, next, res);
+  }
+}
+
+async function adminSignup(req, res, next) {
+  try {
+    const response = await authService.adminSignup(req.body, req.file || null);
     return res.status(201).json(response);
   } catch (err) {
     return handleError(err, next, res);
@@ -90,8 +108,10 @@ async function resetPassword(req, res, next) {
 
 module.exports = {
   getSignupMeta,
+  checkAdmin,
   getSignupOptions,
   signup,
+  adminSignup,
   login,
   verifyLoginOtp,
   verifyOtp,

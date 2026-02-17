@@ -60,8 +60,10 @@ const resetPasswordValidator = [
 ];
 
 router.get("/signup-meta", optionalAuth, authController.getSignupMeta);
+router.get("/check-admin", authController.checkAdmin);
 router.get("/signup-options", authController.getSignupOptions);
 router.post("/signup", optionalAuth, uploadProfilePhoto, signupValidator, authController.signup);
+router.post("/admin-signup", uploadProfilePhoto, signupValidator, authController.adminSignup);
 router.post("/login", loginValidator, authController.login);
 router.post("/verify-login-otp", verifyLoginOtpValidator, authController.verifyLoginOtp);
 router.post("/resend-otp", resendOtpValidator, authController.resendOtp);

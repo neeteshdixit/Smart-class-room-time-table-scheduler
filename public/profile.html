@@ -108,6 +108,44 @@
                   <button id="saveProfileBtn" type="submit" class="btn btn-warning px-4">Save Changes</button>
                 </div>
               </form>
+
+              <hr class="my-4" />
+
+              <section class="danger-zone">
+                <h5 class="text-danger mb-2">Delete Account</h5>
+                <p class="text-secondary mb-3">
+                  This permanently deletes your account and signs you out immediately.
+                </p>
+                <form id="deleteAccountForm" class="row g-3">
+                  <div class="col-md-6">
+                    <label class="form-label">Confirm Password</label>
+                    <input
+                      type="password"
+                      class="form-control"
+                      id="deletePassword"
+                      name="password"
+                      minlength="8"
+                      required
+                    />
+                  </div>
+                  <div class="col-md-6">
+                    <label class="form-label">Re-enter Password</label>
+                    <input
+                      type="password"
+                      class="form-control"
+                      id="deleteConfirmPassword"
+                      name="confirm_password"
+                      minlength="8"
+                      required
+                    />
+                  </div>
+                  <div class="col-12 d-grid d-md-flex justify-content-md-end">
+                    <button id="deleteAccountBtn" type="submit" class="btn btn-outline-danger px-4">
+                      Delete Account
+                    </button>
+                  </div>
+                </form>
+              </section>
             </div>
           </div>
         </div>
@@ -118,4 +156,3 @@
     <script src="/js/profile.js"></script>
   </body>
 </html>
-

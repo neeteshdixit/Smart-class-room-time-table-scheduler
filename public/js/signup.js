@@ -6,6 +6,7 @@ const adminRoleHelp = document.getElementById("adminRoleHelp");
 const departmentSelect = document.getElementById("departmentSelect");
 const subjectSelect = document.getElementById("subjectSelect");
 const subjectCountHelp = document.getElementById("subjectCountHelp");
+let adminExists = false;
 
 function getSelectedValues(selectElement) {
   if (!selectElement) return [];
@@ -37,6 +38,23 @@ async function loadSignupOptions() {
   }
 }
 
+function applyAdminAvailability(meta) {
+  if (!roleSelect || !adminRoleOption) return;
+
+  adminExists = Boolean(meta?.admin_exists);
+  adminRoleOption.disabled = adminExists;
+
+  if (adminExists && roleSelect.value === "ADMIN") {
+    roleSelect.value = "FACULTY";
+  }
+
+  if (adminRoleHelp) {
+    adminRoleHelp.textContent = adminExists
+      ? "Admin account already exists. Contact administrator."
+      : "No admin account exists yet. You can create the first admin account.";
+  }
+}
+
 function buildAuthHeader() {
   const token = getAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -46,25 +64,13 @@ async function loadSignupMeta() {
   if (!roleSelect || !adminRoleOption) return;
 
   try {
-    const response = await fetch("/api/auth/signup-meta", {
+    const meta = await apiRequest("/auth/check-admin", {
       headers: buildAuthHeader(),
     });
-    const meta = await response.json();
-
-    const requesterIsAdmin = Boolean(meta.requester_is_admin);
-    adminRoleOption.disabled = !requesterIsAdmin;
-    if (!requesterIsAdmin && roleSelect.value === "ADMIN") {
-      roleSelect.value = "FACULTY";
-    }
-
-    if (adminRoleHelp) {
-      adminRoleHelp.textContent = requesterIsAdmin
-        ? "You are logged in as ADMIN. You can create ADMIN/FACULTY/USER."
-        : "ADMIN role can only be created by an existing logged-in admin.";
-    }
+    applyAdminAvailability(meta);
   } catch (err) {
     if (adminRoleHelp) {
-      adminRoleHelp.textContent = "Could not verify role restrictions right now.";
+      adminRoleHelp.textContent = "Could not verify admin availability right now.";
     }
   }
 }
@@ -95,15 +101,36 @@ if (signupForm) {
       return;
     }
 
+    if (roleValue === "ADMIN") {
+      try {
+        const adminStatus = await apiRequest("/auth/check-admin", {
+          headers: buildAuthHeader(),
+        });
+        applyAdminAvailability(adminStatus);
+      } catch (err) {
+        showAlert("signupAlert", "Unable to verify admin availability right now.");
+        return;
+      }
+
+      if (adminExists) {
+        showAlert("signupAlert", "Admin account already exists. Contact administrator.");
+        return;
+      }
+    }
+
     const formData = new FormData(signupForm);
     formData.set("department_ids", JSON.stringify(departmentIds));
     formData.set("subject_ids", JSON.stringify(subjectIds));
+    if (roleValue === "ADMIN") {
+      formData.set("role", "ADMIN");
+    }
 
     signupBtn.disabled = true;
     signupBtn.textContent = "Registering...";
 
     try {
-      const response = await fetch("/api/auth/signup", {
+      const endpoint = roleValue === "ADMIN" ? "/api/auth/admin-signup" : "/api/auth/signup";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: buildAuthHeader(),
         body: formData,
@@ -134,4 +161,3 @@ if (signupForm) {
     }
   });
 }
-

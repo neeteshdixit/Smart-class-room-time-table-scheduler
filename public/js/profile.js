@@ -2,6 +2,10 @@ requireAuth();
 
 const profileForm = document.getElementById("profileForm");
 const saveProfileBtn = document.getElementById("saveProfileBtn");
+const deleteAccountForm = document.getElementById("deleteAccountForm");
+const deleteAccountBtn = document.getElementById("deleteAccountBtn");
+const deletePasswordInput = document.getElementById("deletePassword");
+const deleteConfirmPasswordInput = document.getElementById("deleteConfirmPassword");
 
 function assignProfileToForm(profile) {
   Object.keys(profile).forEach((key) => {
@@ -60,5 +64,49 @@ if (profileForm) {
   });
 }
 
-loadProfile();
+if (deleteAccountForm) {
+  deleteAccountForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    hideAlert("profileAlert");
 
+    const password = deletePasswordInput ? deletePasswordInput.value : "";
+    const confirmPassword = deleteConfirmPasswordInput ? deleteConfirmPasswordInput.value : "";
+
+    if (!password || !confirmPassword) {
+      showAlert("profileAlert", "Please enter password and confirm password to delete your account.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showAlert("profileAlert", "Password and confirm password do not match.");
+      return;
+    }
+
+    const confirmed = window.confirm("Are you sure you want to delete your account?");
+    if (!confirmed) {
+      return;
+    }
+
+    deleteAccountBtn.disabled = true;
+    deleteAccountBtn.textContent = "Deleting...";
+
+    try {
+      await apiRequest("/profile/delete-account", {
+        method: "DELETE",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          password,
+          confirm_password: confirmPassword,
+        }),
+      });
+      logout();
+    } catch (err) {
+      showAlert("profileAlert", err.message);
+    } finally {
+      deleteAccountBtn.disabled = false;
+      deleteAccountBtn.textContent = "Delete Account";
+    }
+  });
+}
+
+loadProfile();

@@ -37,8 +37,7 @@ const { logActivity } = require("../utils/activity");
 const ROLE_FACULTY = "FACULTY";
 const ROLE_ADMIN = "ADMIN";
 const ROLE_USER = "USER";
-const ADMIN_CREATE_RESTRICTED_MESSAGE =
-  "Admin role is restricted. Only an existing admin can create another admin.";
+const ADMIN_EXISTS_MESSAGE = "Admin account already exists. Contact administrator.";
 
 function buildError(statusCode, message) {
   const error = new Error(message);
@@ -96,14 +95,26 @@ function isAdminActor(actorUser) {
 async function getSignupMeta(actorUser) {
   const totalAdmins = await countAdmins();
   const requesterIsAdmin = isAdminActor(actorUser);
+  const adminExists = totalAdmins > 0;
 
   return {
-    admin_exists: totalAdmins > 0,
+    admin_exists: adminExists,
+    admin_count: totalAdmins,
     requester_is_admin: requesterIsAdmin,
-    admin_signup_enabled: requesterIsAdmin,
-    allowed_roles: requesterIsAdmin
-      ? [ROLE_ADMIN, ROLE_FACULTY, ROLE_USER]
-      : [ROLE_FACULTY, ROLE_USER],
+    admin_signup_enabled: !adminExists,
+    allowed_roles: adminExists ? [ROLE_FACULTY, ROLE_USER] : [ROLE_ADMIN, ROLE_FACULTY, ROLE_USER],
+  };
+}
+
+async function checkAdminAvailability() {
+  const totalAdmins = await countAdmins();
+  const adminExists = totalAdmins > 0;
+
+  return {
+    admin_exists: adminExists,
+    admin_count: totalAdmins,
+    admin_signup_enabled: !adminExists,
+    message: adminExists ? ADMIN_EXISTS_MESSAGE : "Admin signup is available.",
   };
 }
 
@@ -120,10 +131,6 @@ async function signup(payload, actorUser = null, uploadedFile = null) {
   const role = normalizeRole(payload.role);
   const departmentIds = parseIdArray(payload.department_ids);
   const subjectIds = parseIdArray(payload.subject_ids);
-
-  if (role === ROLE_ADMIN && !isAdminActor(actorUser)) {
-    throw buildError(403, ADMIN_CREATE_RESTRICTED_MESSAGE);
-  }
 
   if (role === ROLE_FACULTY && departmentIds.length === 0) {
     throw buildError(400, "At least one department must be selected for faculty registration.");
@@ -155,8 +162,8 @@ async function signup(payload, actorUser = null, uploadedFile = null) {
 
     if (role === ROLE_ADMIN) {
       const totalAdmins = await countAdmins(client);
-      if (totalAdmins > 0 && !isAdminActor(actorUser)) {
-        throw buildError(403, ADMIN_CREATE_RESTRICTED_MESSAGE);
+      if (totalAdmins > 0) {
+        throw buildError(409, ADMIN_EXISTS_MESSAGE);
       }
     }
 
@@ -211,12 +218,26 @@ async function signup(payload, actorUser = null, uploadedFile = null) {
       err.code === "23505" &&
       String(err.constraint || "").toLowerCase().includes("uq_single_admin_user")
     ) {
-      throw buildError(409, ADMIN_CREATE_RESTRICTED_MESSAGE);
+      throw buildError(409, ADMIN_EXISTS_MESSAGE);
     }
     throw err;
   } finally {
     client.release();
   }
+}
+
+async function adminSignup(payload, uploadedFile = null) {
+  const totalAdmins = await countAdmins();
+  if (totalAdmins > 0) {
+    throw buildError(409, ADMIN_EXISTS_MESSAGE);
+  }
+
+  const adminPayload = {
+    ...payload,
+    role: ROLE_ADMIN,
+  };
+
+  return signup(adminPayload, null, uploadedFile);
 }
 
 async function login(payload) {
@@ -439,7 +460,9 @@ module.exports = {
   verifyOtp,
   resendOtp,
   getSignupMeta,
+  checkAdminAvailability,
   getSignupOptions,
+  adminSignup,
   forgotPassword,
   resetPassword,
 };
