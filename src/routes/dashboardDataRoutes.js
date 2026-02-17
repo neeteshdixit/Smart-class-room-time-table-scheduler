@@ -95,6 +95,32 @@ router.get("/activity-log", authRequired, async (req, res, next) => {
   }
 });
 
+router.delete("/activity-log/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const activityId = asPositiveInt(req.params.id, 0);
+    if (!activityId) {
+      return res.status(400).json({ message: "Invalid activity id" });
+    }
+
+    const deleted = await pool.query(
+      `DELETE FROM recent_activity
+       WHERE id = $1
+       RETURNING id`,
+      [activityId]
+    );
+
+    if (deleted.rowCount === 0) {
+      return res.status(404).json({ message: "Activity record not found" });
+    }
+
+    return res.json({ message: "Activity deleted successfully", id: deleted.rows[0].id });
+  } catch (err) {
+    return next(err);
+  }
+});
+
 router.get("/departments", authRequired, async (req, res, next) => {
   try {
     const { page, limit, offset } = parsePagination(req.query);

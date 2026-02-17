@@ -7,6 +7,10 @@ const roomTableBody = document.getElementById("roomTableBody");
 const generationResult = document.getElementById("generationResult");
 const semesterSelect = document.getElementById("semesterSelect");
 const timetableHistoryBody = document.getElementById("timetableHistoryBody");
+const timetableGridHeader = document.getElementById("timetableGridHeader");
+const timetableGridContainer = document.getElementById("timetableGridContainer");
+const timetableGridFooter = document.getElementById("timetableGridFooter");
+const timetableSectionSelect = document.getElementById("timetableSectionSelect");
 const activityList = document.getElementById("activityList");
 const loadingOverlay = document.getElementById("loadingOverlay");
 const statusToastEl = document.getElementById("statusToast");
@@ -59,6 +63,7 @@ const state = {
   history: { page: 1, limit: 8, total: 0, q: "" },
   activity: { page: 1, limit: 10, total: 0, q: "" },
   info: { resource: null, page: 1, limit: 8, total: 0, q: "", rows: [] },
+  timetableView: { detail: null, sectionId: null },
 };
 
 const entityOrder = [
@@ -303,6 +308,221 @@ function dayOfWeekLabel(day) {
     7: "Sunday",
   };
   return map[Number(day)] || String(day || "-");
+}
+
+function formatClockTime(value) {
+  if (!value) return "-";
+  const [hRaw, mRaw] = String(value).split(":");
+  const hour = Number(hRaw);
+  const minute = Number(mRaw);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return String(value);
+  }
+
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
+  return `${String(normalizedHour).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${suffix}`;
+}
+
+function toTimeMinutes(value) {
+  const [hRaw, mRaw] = String(value || "").split(":");
+  const hour = Number(hRaw);
+  const minute = Number(mRaw);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return hour * 60 + minute;
+}
+
+function detectLunchInsertIndex(slotColumns) {
+  if (!slotColumns.length) return 0;
+
+  for (let i = 0; i < slotColumns.length - 1; i += 1) {
+    const endCurrent = toTimeMinutes(slotColumns[i].end_time);
+    const startNext = toTimeMinutes(slotColumns[i + 1].start_time);
+    if (endCurrent !== null && startNext !== null && endCurrent <= 780 && startNext >= 780) {
+      return i + 1;
+    }
+  }
+
+  return Math.ceil(slotColumns.length / 2);
+}
+
+function renderTimetablePlaceholder(message = "Generate or select a timetable to view.") {
+  if (timetableGridHeader) timetableGridHeader.innerHTML = "";
+  if (timetableGridFooter) timetableGridFooter.innerHTML = "";
+  if (timetableGridContainer) {
+    timetableGridContainer.innerHTML = `<div class="text-secondary py-3 text-center">${escapeHtml(message)}</div>`;
+  }
+  if (timetableSectionSelect) {
+    timetableSectionSelect.innerHTML = '<option value="">No section</option>';
+    timetableSectionSelect.disabled = true;
+  }
+}
+
+function buildTimetableCell(entry) {
+  if (!entry) {
+    return '<td><div class="timetable-cell text-secondary">-</div></td>';
+  }
+
+  const cellClass = String(entry.subject_type || "").toLowerCase() === "practical"
+    ? "timetable-cell-practical"
+    : "timetable-cell-theory";
+
+  return `
+    <td class="${cellClass}">
+      <div class="timetable-cell">
+        <div class="timetable-cell-code">${escapeHtml(entry.subject_code)}</div>
+        <div class="timetable-cell-title">${escapeHtml(entry.subject_name)}</div>
+        <div class="timetable-cell-detail">${escapeHtml(entry.faculty_name)}</div>
+        <div class="timetable-cell-room">${escapeHtml(entry.room_number)}</div>
+      </div>
+    </td>
+  `;
+}
+
+function renderTimetableGrid(detail, preferredSectionId = null) {
+  if (!detail || !timetableGridContainer) {
+    renderTimetablePlaceholder();
+    return;
+  }
+
+  const entries = Array.isArray(detail.entries) ? detail.entries : [];
+  const allSections = Array.from(
+    new Map(entries.map((entry) => [entry.section_id, entry.section_name])).entries()
+  ).map(([id, name]) => ({ id: Number(id), name }));
+
+  if (!allSections.length) {
+    renderTimetablePlaceholder("No timetable entries found for this version.");
+    return;
+  }
+
+  let selectedSectionId = Number(preferredSectionId || state.timetableView.sectionId || allSections[0].id);
+  if (!allSections.some((section) => section.id === selectedSectionId)) {
+    selectedSectionId = allSections[0].id;
+  }
+  state.timetableView.sectionId = selectedSectionId;
+  state.timetableView.detail = detail;
+
+  if (timetableSectionSelect) {
+    timetableSectionSelect.disabled = false;
+    timetableSectionSelect.innerHTML = allSections
+      .map((section) => `<option value="${section.id}">${escapeHtml(section.name)}</option>`)
+      .join("");
+    timetableSectionSelect.value = String(selectedSectionId);
+  }
+
+  const sectionEntries = entries.filter((entry) => Number(entry.section_id) === selectedSectionId);
+  const sectionName = allSections.find((section) => section.id === selectedSectionId)?.name || "Section";
+  const timeSlots = Array.isArray(detail.time_slots) ? detail.time_slots : [];
+
+  const slotColumns = Array.from(
+    new Map(
+      timeSlots
+        .map((slot) => [Number(slot.slot_number), slot])
+        .sort((a, b) => a[0] - b[0])
+    ).values()
+  ).sort((a, b) => Number(a.slot_number) - Number(b.slot_number));
+
+  if (!slotColumns.length) {
+    renderTimetablePlaceholder("No time slots configured.");
+    return;
+  }
+
+  const lunchInsertIndex = detectLunchInsertIndex(slotColumns);
+  const timeSlotByDayAndNumber = new Map(
+    timeSlots.map((slot) => [`${slot.day_of_week}-${slot.slot_number}`, slot])
+  );
+  const entryByTimeslotId = new Map(
+    sectionEntries.map((entry) => [Number(entry.timeslot_id), entry])
+  );
+
+  const headerCells = slotColumns
+    .map((slot, index) => {
+      const header = `
+        <th class="timetable-slot-col">
+          <div>${escapeHtml(slot.slot_number)}</div>
+          <div class="small fw-normal">${escapeHtml(formatClockTime(slot.start_time))} - ${escapeHtml(formatClockTime(slot.end_time))}</div>
+        </th>
+      `;
+      if (index === lunchInsertIndex - 1) {
+        return `${header}<th class="timetable-lunch-col">Lunch Break</th>`;
+      }
+      return header;
+    })
+    .join("");
+
+  const dayRows = [
+    { id: 1, label: "Mo" },
+    { id: 2, label: "Tu" },
+    { id: 3, label: "We" },
+    { id: 4, label: "Th" },
+    { id: 5, label: "Fr" },
+  ]
+    .map((day) => {
+      const cells = slotColumns
+        .map((slot, index) => {
+          const daySlot = timeSlotByDayAndNumber.get(`${day.id}-${slot.slot_number}`);
+          const entry = daySlot ? entryByTimeslotId.get(Number(daySlot.id)) : null;
+          const cellHtml = buildTimetableCell(entry);
+          if (index === lunchInsertIndex - 1) {
+            return `${cellHtml}<td class="timetable-lunch-col">LUNCH</td>`;
+          }
+          return cellHtml;
+        })
+        .join("");
+      return `
+        <tr>
+          <td class="timetable-day-col">${escapeHtml(day.label)}</td>
+          ${cells}
+        </tr>
+      `;
+    })
+    .join("");
+
+  if (timetableGridHeader) {
+    timetableGridHeader.innerHTML = `
+      <div class="timetable-session-title">Session ${escapeHtml(detail.timetable.academic_year || "-")}</div>
+      <div class="timetable-program-title">Semester ${escapeHtml(detail.timetable.semester_number || "-")} (${escapeHtml(sectionName)})</div>
+      <div class="small text-secondary">${escapeHtml(detail.timetable.department_name || "-")} | ${escapeHtml(detail.timetable.branch_name || "-")}</div>
+    `;
+  }
+
+  timetableGridContainer.innerHTML = `
+    <table class="table table-bordered timetable-grid-table mb-0">
+      <thead>
+        <tr>
+          <th class="timetable-day-col">Day</th>
+          ${headerCells}
+        </tr>
+      </thead>
+      <tbody>
+        ${dayRows}
+      </tbody>
+    </table>
+  `;
+
+  if (timetableGridFooter) {
+    timetableGridFooter.innerHTML = `
+      <span>Generated: ${escapeHtml(formatDateTime(detail.timetable.created_at))}</span>
+      <span>Smart Classroom Timetable Scheduler</span>
+    `;
+  }
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const parts = String(token || "").split(".");
+    if (parts.length < 2) return null;
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    return JSON.parse(window.atob(padded));
+  } catch (err) {
+    return null;
+  }
+}
+
+function isAdminUser() {
+  const payload = decodeJwtPayload(getAuthToken());
+  return String(payload?.role || "").toLowerCase() === "admin";
 }
 
 function updateLoadingState(delta) {
@@ -825,8 +1045,17 @@ async function loadTimetableHistory() {
         <td>${escapeHtml(row.semester_number)} (${escapeHtml(row.academic_year)})</td>
         <td>${escapeHtml(formatDateTime(row.created_at))}</td>
         <td><a class="btn btn-outline-primary btn-sm" href="${escapeHtml(row.pdf_path)}" target="_blank" rel="noopener">Download PDF</a></td>
+        <td>
+          ${
+            row.timetable_id
+              ? `<button type="button" class="btn btn-outline-secondary btn-sm" data-view-timetable-id="${escapeHtml(
+                  row.timetable_id
+                )}">View Grid</button>`
+              : '<span class="text-secondary small">N/A</span>'
+          }
+        </td>
       </tr>`,
-    5
+    6
   );
 
   updatePager(
@@ -835,6 +1064,13 @@ async function loadTimetableHistory() {
     "historyPrev",
     "historyNext"
   );
+}
+
+async function loadTimetableDetails(timetableId, preferredSectionId = null) {
+  const detail = await apiRequest(`/timetable/${timetableId}`, {
+    headers: authHeaders(),
+  });
+  renderTimetableGrid(detail, preferredSectionId);
 }
 
 async function loadActivityLog() {
@@ -851,15 +1087,27 @@ async function loadActivityLog() {
   if (!result.data.length) {
     activityList.innerHTML = '<li class="list-group-item text-secondary">No recent activity found.</li>';
   } else {
+    const canDelete = isAdminUser();
     activityList.innerHTML = result.data
       .map(
         (item) => `
           <li class="list-group-item">
-            <div class="fw-semibold">${escapeHtml(item.action_type)}</div>
-            <div class="small text-secondary">${escapeHtml(item.details || "-")}</div>
-            <div class="small text-muted">${escapeHtml(item.actor_name || "System")} | ${escapeHtml(
-              formatDateTime(item.created_at)
-            )}</div>
+            <div class="d-flex justify-content-between align-items-start gap-2">
+              <div>
+                <div class="fw-semibold">${escapeHtml(item.action_type)}</div>
+                <div class="small text-secondary">${escapeHtml(item.details || "-")}</div>
+                <div class="small text-muted">${escapeHtml(item.actor_name || "System")} | ${escapeHtml(
+                  formatDateTime(item.created_at)
+                )}</div>
+              </div>
+              ${
+                canDelete
+                  ? `<button type="button" class="btn btn-outline-danger btn-sm" data-delete-activity-id="${escapeHtml(
+                      item.id
+                    )}">Delete</button>`
+                  : ""
+              }
+            </div>
           </li>`
       )
       .join("");
@@ -1055,6 +1303,9 @@ if (generateForm && generateBtn && generationResult) {
       await withLoading(async () => {
         await loadSummary();
         await loadTimetableHistory();
+        if (result?.timetable?.id) {
+          await loadTimetableDetails(result.timetable.id);
+        }
       });
     } catch (err) {
       handleRequestError(err);
@@ -1087,6 +1338,26 @@ bindClick("historyNext", () => {
   withLoading(loadTimetableHistory).catch(handleRequestError);
 });
 
+if (timetableHistoryBody) {
+  timetableHistoryBody.addEventListener("click", (event) => {
+    const viewBtn = event.target.closest("[data-view-timetable-id]");
+    if (!viewBtn) return;
+
+    const timetableId = Number(viewBtn.dataset.viewTimetableId);
+    if (!Number.isInteger(timetableId) || timetableId <= 0) return;
+
+    withLoading(() => loadTimetableDetails(timetableId)).catch(handleRequestError);
+  });
+}
+
+if (timetableSectionSelect) {
+  timetableSectionSelect.addEventListener("change", () => {
+    const selected = Number(timetableSectionSelect.value);
+    if (!state.timetableView.detail || !Number.isInteger(selected) || selected <= 0) return;
+    renderTimetableGrid(state.timetableView.detail, selected);
+  });
+}
+
 if (activitySearch) {
   activitySearch.addEventListener(
     "input",
@@ -1108,6 +1379,39 @@ bindClick("activityNext", () => {
   state.activity.page = Math.min(maxPage, state.activity.page + 1);
   withLoading(loadActivityLog).catch(handleRequestError);
 });
+
+if (activityList) {
+  activityList.addEventListener("click", async (event) => {
+    const deleteBtn = event.target.closest("[data-delete-activity-id]");
+    if (!deleteBtn) return;
+
+    const activityId = Number(deleteBtn.dataset.deleteActivityId);
+    if (!Number.isInteger(activityId) || activityId <= 0) return;
+
+    const confirmed = window.confirm("Delete this activity entry?");
+    if (!confirmed) return;
+
+    try {
+      await withLoading(() =>
+        apiRequest(`/activity-log/${activityId}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        })
+      );
+
+      showToast("Activity deleted successfully.", "success");
+
+      const maxPageBeforeReload = Math.max(1, Math.ceil(Math.max(0, state.activity.total - 1) / state.activity.limit));
+      if (state.activity.page > maxPageBeforeReload) {
+        state.activity.page = maxPageBeforeReload;
+      }
+
+      await withLoading(loadActivityLog);
+    } catch (err) {
+      handleRequestError(err);
+    }
+  });
+}
 
 async function initializeDashboard() {
   hideAlert(dashboardAlertId);

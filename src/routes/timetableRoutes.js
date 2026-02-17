@@ -166,6 +166,10 @@ async function generateTimetableHandler(req, res, next) {
       `SELECT id, room_type, capacity
        FROM classrooms`
     );
+    const labsResult = await client.query(
+      `SELECT id, lab_name, capacity
+       FROM laboratories`
+    );
 
     if (sectionsResult.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -186,6 +190,11 @@ async function generateTimetableHandler(req, res, next) {
 
     if (roomsResult.rowCount === 0) {
       await client.query("ROLLBACK");
+      if (labsResult.rowCount > 0) {
+        return res.status(400).json({
+          message: "No classrooms configured. Add classroom records (room_type: Lecture/Lab) to assign slots.",
+        });
+      }
       return res.status(400).json({ message: "No classrooms configured" });
     }
 
@@ -397,11 +406,20 @@ async function getTimetableHistoryHandler(req, res, next) {
     const [result, countResult] = await Promise.all([
       pool.query(
         `SELECT th.id, th.version_name, th.semester_id, th.pdf_path, th.created_at,
+                latest_timetable.id AS timetable_id,
                 sem.semester_number, sem.academic_year,
                 b.branch_name
          FROM timetable_history th
          JOIN semesters sem ON sem.id = th.semester_id
          JOIN branches b ON b.id = sem.branch_id
+         LEFT JOIN LATERAL (
+            SELECT t.id
+            FROM timetables t
+            WHERE t.semester_id = th.semester_id
+              AND t.version_name = th.version_name
+            ORDER BY ABS(EXTRACT(EPOCH FROM (t.created_at - th.created_at))) ASC, t.id DESC
+            LIMIT 1
+         ) latest_timetable ON TRUE
          WHERE ($1 = '' OR th.version_name ILIKE $1 OR b.branch_name ILIKE $1 OR sem.academic_year ILIKE $1)
          ORDER BY th.created_at DESC
          LIMIT $2 OFFSET $3`,
@@ -430,6 +448,51 @@ async function getTimetableHistoryHandler(req, res, next) {
   }
 }
 
+async function fetchTimetableDetails(timetableId) {
+  const timetableResult = await pool.query(
+    `SELECT t.*, s.semester_number, s.academic_year, b.branch_name, d.department_name
+     FROM timetables t
+     JOIN semesters s ON s.id = t.semester_id
+     JOIN branches b ON b.id = s.branch_id
+     JOIN departments d ON d.id = b.department_id
+     WHERE t.id = $1`,
+    [timetableId]
+  );
+
+  if (timetableResult.rowCount === 0) {
+    return null;
+  }
+
+  const [entriesResult, timeslotsResult] = await Promise.all([
+    pool.query(
+      `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code, sub.subject_type,
+              te.faculty_id, f.full_name AS faculty_name, te.classroom_id, c.room_number,
+              ts.id AS timeslot_id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number
+       FROM timetable_entries te
+       JOIN sections sec ON sec.id = te.section_id
+       JOIN subjects sub ON sub.id = te.subject_id
+       JOIN faculty f ON f.id = te.faculty_id
+       JOIN classrooms c ON c.id = te.classroom_id
+       JOIN time_slots ts ON ts.id = te.timeslot_id
+       WHERE te.timetable_id = $1
+       ORDER BY sec.section_name, ts.day_of_week, ts.slot_number`,
+      [timetableId]
+    ),
+    pool.query(
+      `SELECT id, day_of_week, start_time, end_time, slot_number
+       FROM time_slots
+       WHERE day_of_week BETWEEN 1 AND 5
+       ORDER BY day_of_week, slot_number`
+    ),
+  ]);
+
+  return {
+    timetable: timetableResult.rows[0],
+    entries: entriesResult.rows,
+    time_slots: timeslotsResult.rows,
+  };
+}
+
 const generateTimetableMiddleware = [
   authRequired,
   body("semester_id").isInt({ min: 1 }),
@@ -448,37 +511,11 @@ router.get("/", authRequired, async (req, res, next) => {
     const { semester_id: semesterId, timetable_id: timetableId, status } = req.query;
 
     if (timetableId) {
-      const timetableResult = await pool.query(
-        `SELECT t.*, s.semester_number, s.academic_year
-         FROM timetables t
-         JOIN semesters s ON s.id = t.semester_id
-         WHERE t.id = $1`,
-        [timetableId]
-      );
-
-      if (timetableResult.rowCount === 0) {
+      const detail = await fetchTimetableDetails(timetableId);
+      if (!detail) {
         return res.status(404).json({ message: "Timetable not found" });
       }
-
-      const entriesResult = await pool.query(
-        `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code,
-                te.faculty_id, f.full_name AS faculty_name, te.classroom_id, c.room_number,
-                ts.id AS timeslot_id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number
-         FROM timetable_entries te
-         JOIN sections sec ON sec.id = te.section_id
-         JOIN subjects sub ON sub.id = te.subject_id
-         JOIN faculty f ON f.id = te.faculty_id
-         JOIN classrooms c ON c.id = te.classroom_id
-         JOIN time_slots ts ON ts.id = te.timeslot_id
-         WHERE te.timetable_id = $1
-         ORDER BY sec.section_name, ts.day_of_week, ts.slot_number`,
-        [timetableId]
-      );
-
-      return res.json({
-        timetable: timetableResult.rows[0],
-        entries: entriesResult.rows,
-      });
+      return res.json(detail);
     }
 
     const filters = [];
@@ -506,6 +543,19 @@ router.get("/", authRequired, async (req, res, next) => {
     );
 
     return res.json({ data: result.rows });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.get("/:id(\\d+)", authRequired, async (req, res, next) => {
+  try {
+    const timetableId = Number(req.params.id);
+    const detail = await fetchTimetableDetails(timetableId);
+    if (!detail) {
+      return res.status(404).json({ message: "Timetable not found" });
+    }
+    return res.json(detail);
   } catch (err) {
     return next(err);
   }

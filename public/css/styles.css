@@ -276,6 +276,83 @@ h6,
   border-radius: 12px;
 }
 
+.timetable-grid-table th,
+.timetable-grid-table td {
+  border: 1px solid #0f172a !important;
+  vertical-align: middle;
+  text-align: center;
+}
+
+.timetable-grid-table th {
+  background: #e2e8f0;
+  font-weight: 700;
+}
+
+.timetable-day-col {
+  width: 88px;
+  min-width: 88px;
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.timetable-slot-col {
+  min-width: 170px;
+}
+
+.timetable-lunch-col {
+  min-width: 120px;
+  background: #fef3c7;
+  font-weight: 700;
+}
+
+.timetable-cell {
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.18rem;
+  text-align: center;
+}
+
+.timetable-cell-code {
+  font-weight: 700;
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+
+.timetable-cell-title {
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.timetable-cell-detail {
+  font-size: 0.85rem;
+}
+
+.timetable-cell-room {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.timetable-cell-practical {
+  background: #eff6ff;
+}
+
+.timetable-cell-theory {
+  background: #f8fafc;
+}
+
+.timetable-session-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.timetable-program-title {
+  font-size: 2.2rem;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
