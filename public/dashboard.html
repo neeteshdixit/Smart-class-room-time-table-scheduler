@@ -55,7 +55,7 @@
             </li>
           </ul>
           <a href="/profile.html" class="btn btn-outline-light btn-sm me-2">Profile</a>
-          <button onclick="logout()" class="btn btn-warning btn-sm">Logout</button>
+          <button id="dashboardLogoutBtn" data-logout-button type="button" class="btn btn-warning btn-sm">Logout</button>
         </div>
       </div>
     </nav>
@@ -219,11 +219,20 @@
           <form id="entityForm">
             <div class="modal-header">
               <h5 id="entityFormTitle" class="modal-title">Add Record</h5>
-              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+              <button
+                id="entityFormCloseBtn"
+                type="button"
+                class="btn-close"
+                data-entity-form-close
+                data-bs-dismiss="modal"
+                aria-label="Close"
+              ></button>
             </div>
             <div id="entityFormBody" class="modal-body row g-3"></div>
             <div class="modal-footer">
-              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+              <button id="entityCancelBtn" type="button" class="btn btn-outline-secondary" data-entity-form-close data-bs-dismiss="modal">
+                Cancel
+              </button>
               <button id="entitySubmitBtn" type="submit" class="btn btn-warning">Save</button>
             </div>
           </form>

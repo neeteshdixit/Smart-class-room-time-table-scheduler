@@ -27,6 +27,8 @@ const historyPageLabel = document.getElementById("historyPageLabel");
 const activityPageLabel = document.getElementById("activityPageLabel");
 const entityInfoPageLabel = document.getElementById("entityInfoPageLabel");
 const dashboardAlertId = "dashboardAlert";
+const genericApiErrorMessage = "Something went wrong. Please try again.";
+const inFlightListRequests = new Map();
 
 const bootstrapApi = window.bootstrap || null;
 
@@ -557,13 +559,19 @@ function showToast(message, type = "success") {
   statusToast.show();
 }
 
+function getRequestErrorMessage(err) {
+  const message = String(err?.message || "").trim();
+  return message && message.toLowerCase() !== "request failed" ? message : genericApiErrorMessage;
+}
+
 function handleRequestError(err) {
   if (String(err.message || "").toLowerCase().includes("token")) {
     logout();
     return;
   }
-  showAlert(dashboardAlertId, err.message || "Request failed");
-  showToast(err.message || "Request failed", "danger");
+  const message = getRequestErrorMessage(err);
+  showAlert(dashboardAlertId, message);
+  showToast(message, "danger");
 }
 
 function renderTableRows(target, rows, formatter, emptyColspan = 6) {
@@ -696,14 +704,29 @@ async function fetchList(endpoint, params = {}) {
     }
   });
   const qs = searchParams.toString();
-  return apiRequest(`${endpoint}${qs ? `?${qs}` : ""}`, { headers: authHeaders() });
+  const path = `${endpoint}${qs ? `?${qs}` : ""}`;
+  if (inFlightListRequests.has(path)) {
+    return inFlightListRequests.get(path);
+  }
+
+  const request = apiRequest(path, { headers: authHeaders() }).finally(() => {
+    if (inFlightListRequests.get(path) === request) {
+      inFlightListRequests.delete(path);
+    }
+  });
+
+  inFlightListRequests.set(path, request);
+  return request;
 }
 
 async function fetchListWithFallback(endpoint, fallbackEndpoint, params = {}) {
   try {
     return await fetchList(endpoint, params);
   } catch (err) {
-    if (!fallbackEndpoint) {
+    const shouldTryFallback =
+      Boolean(fallbackEndpoint) && (typeof err.status !== "number" || err.status === 404);
+
+    if (!shouldTryFallback) {
       throw err;
     }
     return fetchList(fallbackEndpoint, params);
@@ -917,6 +940,15 @@ function normalizePayload(resourceKey, payload) {
   return converted;
 }
 
+function closeEntityForm() {
+  const entityForm = document.getElementById("entityForm");
+  if (entityForm) {
+    entityForm.reset();
+  }
+  state.currentFormResource = null;
+  formModal.hide();
+}
+
 async function openEntityForm(resourceKey) {
   const config = entityConfig[resourceKey];
   if (config.readOnly && config.addAction) {
@@ -946,7 +978,7 @@ function renderEntityInfoRows(resourceKey, rows) {
   if (!entityInfoBody) return;
   const config = entityConfig[resourceKey];
   if (!rows.length) {
-    entityInfoBody.innerHTML = `<tr><td colspan="${config.columns.length}" class="text-secondary">No data</td></tr>`;
+    entityInfoBody.innerHTML = `<tr><td colspan="${config.columns.length}" class="text-secondary">No records found.</td></tr>`;
     return;
   }
 
@@ -956,6 +988,13 @@ function renderEntityInfoRows(resourceKey, rows) {
       return `<tr>${values}</tr>`;
     })
     .join("");
+}
+
+function renderEntityInfoLoading(resourceKey) {
+  if (!entityInfoBody) return;
+  const config = entityConfig[resourceKey];
+  if (!config) return;
+  entityInfoBody.innerHTML = `<tr><td colspan="${config.columns.length}" class="text-secondary">Loading...</td></tr>`;
 }
 
 function updatePager({ page, limit, total }, labelEl, prevBtnId, nextBtnId) {
@@ -980,12 +1019,18 @@ async function loadEntityInfo() {
     limit,
     q,
   });
-  state.info.total = result.pagination.total;
-  state.info.rows = result.data;
+  const resultData = Array.isArray(result?.data) ? result.data : [];
+  const resultPagination = result?.pagination || {};
+  const resolvedPage = Number(resultPagination.page) || page;
+  const resolvedLimit = Number(resultPagination.limit) || limit;
+  const resolvedTotal = Number(resultPagination.total);
 
-  renderEntityInfoRows(resource, result.data);
+  state.info.total = Number.isFinite(resolvedTotal) ? resolvedTotal : resultData.length;
+  state.info.rows = resultData;
+
+  renderEntityInfoRows(resource, resultData);
   updatePager(
-    { page: result.pagination.page, limit: result.pagination.limit, total: result.pagination.total },
+    { page: resolvedPage, limit: resolvedLimit, total: state.info.total },
     entityInfoPageLabel,
     "entityInfoPrev",
     "entityInfoNext"
@@ -993,6 +1038,8 @@ async function loadEntityInfo() {
 }
 
 async function openEntityInfo(resourceKey) {
+  if (!entityConfig[resourceKey]) return;
+
   state.info.resource = resourceKey;
   state.info.page = 1;
   state.info.q = "";
@@ -1005,8 +1052,9 @@ async function openEntityInfo(resourceKey) {
     entityInfoTitle.textContent = entityConfig[resourceKey].infoLabel;
   }
   renderEntityInfoTableHeader(resourceKey);
-  await loadEntityInfo();
+  renderEntityInfoLoading(resourceKey);
   infoModal.show();
+  await loadEntityInfo();
 }
 
 function csvEscape(value) {
@@ -1198,6 +1246,19 @@ function bindClick(id, handler) {
   }
 }
 
+function bindEntityFormCloseActions() {
+  document.querySelectorAll("[data-entity-form-close]").forEach((button) => {
+    if (button.dataset.formCloseBound === "true") return;
+    button.dataset.formCloseBound = "true";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeEntityForm();
+    });
+  });
+}
+
+bindEntityFormCloseActions();
+
 document.querySelectorAll(".dashboard-tab-link").forEach((btn) => {
   btn.addEventListener("click", () => switchPanel(btn.dataset.tabTarget));
 });
@@ -1245,8 +1306,7 @@ if (entityForm) {
         })
       );
 
-      formModal.hide();
-      entityForm.reset();
+      closeEntityForm();
       showToast(`${entityConfig[resource].title} saved successfully.`, "success");
 
       await withLoading(async () => {

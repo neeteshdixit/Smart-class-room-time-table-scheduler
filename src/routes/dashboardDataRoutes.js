@@ -55,8 +55,14 @@ async function listWithPagination({ page, limit, querySql, queryValues, countSql
 
 router.post("/logout", authRequired, async (req, res, next) => {
   try {
+    if (req.session && typeof req.session.destroy === "function") {
+      await new Promise((resolve, reject) =>
+        req.session.destroy((err) => (err ? reject(err) : resolve()))
+      );
+    }
+
     await logActivity(req.user.userId, "Logout", "User logged out from dashboard");
-    return res.json({ message: "Logged out successfully" });
+    return res.json({ success: true, message: "Logged out successfully" });
   } catch (err) {
     return next(err);
   }

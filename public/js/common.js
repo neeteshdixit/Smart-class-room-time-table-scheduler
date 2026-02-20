@@ -1,6 +1,8 @@
 const DEFAULT_API_BASE = "/api";
 const API_BASE_STORAGE_KEY = "api_base_url";
 const AUTH_STORAGE_KEY = "auth_token";
+const LOGIN_PAGE_PATH = "/login";
+const AUTH_TOKEN_KEYS = [AUTH_STORAGE_KEY, "token", "jwt", "jwt_token", "access_token"];
 let activeApiBase = localStorage.getItem(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE;
 
 function normalizeApiBase(value) {
@@ -42,7 +44,7 @@ function setAuthToken(token) {
 }
 
 function clearAuthToken() {
-  localStorage.removeItem(AUTH_STORAGE_KEY);
+  AUTH_TOKEN_KEYS.forEach((key) => localStorage.removeItem(key));
 }
 
 function authHeaders(extra = {}) {
@@ -110,7 +112,7 @@ function hideAlert(containerId) {
 function requireAuth() {
   const token = getAuthToken();
   if (!token) {
-    window.location.href = "/login.html";
+    window.location.replace(LOGIN_PAGE_PATH);
   }
 }
 
@@ -128,8 +130,26 @@ async function logout() {
   } finally {
     clearAuthToken();
     sessionStorage.removeItem("login_token");
-    window.location.href = "/login.html";
+    sessionStorage.removeItem("otp_preview");
+    window.location.replace(LOGIN_PAGE_PATH);
   }
+}
+
+function bindLogoutButtons() {
+  document.querySelectorAll("[data-logout-button]").forEach((button) => {
+    if (button.dataset.logoutBound === "true") return;
+    button.dataset.logoutBound = "true";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      logout();
+    });
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bindLogoutButtons);
+} else {
+  bindLogoutButtons();
 }
 
 function formatDate(dateValue) {
