@@ -37,6 +37,26 @@ function asPositiveInt(value, fallback) {
   return fallback;
 }
 
+function asNonNegativeInt(value, fallback) {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return fallback;
+}
+
+function normalizeProgramType(value) {
+  return String(value || "UG").trim().toUpperCase() === "PG" ? "PG" : "UG";
+}
+
+function isValidSubjectType(value) {
+  return ["Theory", "Practical", "Both"].includes(value);
+}
+
+function isForeignKeyViolation(err) {
+  return err?.code === "23503";
+}
+
 async function listWithPagination({ page, limit, querySql, queryValues, countSql, countValues }) {
   const [result, countResult] = await Promise.all([
     pool.query(querySql, queryValues),
@@ -210,6 +230,120 @@ router.post("/departments", authRequired, async (req, res, next) => {
   }
 });
 
+router.put("/departments/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const departmentId = asPositiveInt(req.params.id, 0);
+    const departmentName = String(req.body.department_name || "").trim();
+    const departmentCode = String(req.body.department_code || "").trim();
+    const hodName = String(req.body.hod_name || "").trim() || null;
+
+    if (!departmentId) {
+      return res.status(400).json({ message: "Invalid department id" });
+    }
+
+    if (!departmentName || !departmentCode) {
+      return res.status(400).json({ message: "Department name and code are required" });
+    }
+
+    const existing = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Department not found" });
+    }
+
+    const duplicateName = await pool.query(
+      `SELECT id
+       FROM departments
+       WHERE id <> $1
+         AND LOWER(department_name) = LOWER($2)
+       LIMIT 1`,
+      [departmentId, departmentName]
+    );
+    if (duplicateName.rowCount > 0) {
+      return res.status(409).json({ message: "Department already exists" });
+    }
+
+    const duplicateCode = await pool.query(
+      `SELECT id
+       FROM departments
+       WHERE id <> $1
+         AND LOWER(department_code) = LOWER($2)
+       LIMIT 1`,
+      [departmentId, departmentCode]
+    );
+    if (duplicateCode.rowCount > 0) {
+      return res.status(409).json({ message: "Department code already exists" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE departments
+       SET department_name = $1,
+           department_code = $2,
+           hod_name = $3
+       WHERE id = $4
+       RETURNING *`,
+      [departmentName, departmentCode, hodName, departmentId]
+    );
+
+    await logActivity(req.user.userId, "Department Updated", `department=${departmentName}, id=${departmentId}`);
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Department already exists" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/departments/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const departmentId = asPositiveInt(req.params.id, 0);
+    if (!departmentId) {
+      return res.status(400).json({ message: "Invalid department id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, department_name
+       FROM departments
+       WHERE id = $1`,
+      [departmentId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Department not found" });
+    }
+
+    const dependencyResult = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM branches WHERE department_id = $1) AS has_branches,
+         EXISTS(SELECT 1 FROM subjects WHERE department_id = $1) AS has_subjects,
+         EXISTS(SELECT 1 FROM laboratories WHERE department_id = $1) AS has_laboratories,
+         EXISTS(SELECT 1 FROM faculty WHERE department_id = $1) AS has_faculty`,
+      [departmentId]
+    );
+
+    const dependency = dependencyResult.rows[0] || {};
+    if (dependency.has_branches || dependency.has_subjects || dependency.has_laboratories || dependency.has_faculty) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(`DELETE FROM departments WHERE id = $1`, [departmentId]);
+    await logActivity(
+      req.user.userId,
+      "Department Deleted",
+      `department=${existing.rows[0].department_name}, id=${departmentId}`
+    );
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+    return next(err);
+  }
+});
+
 router.get("/branches", authRequired, async (req, res, next) => {
   try {
     const { page, limit, offset } = parsePagination(req.query);
@@ -299,6 +433,136 @@ router.post("/branches", authRequired, async (req, res, next) => {
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({ message: "Branch already exists in this department" });
+    }
+    return next(err);
+  }
+});
+
+router.put("/branches/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const branchId = asPositiveInt(req.params.id, 0);
+    const branchName = String(req.body.branch_name || "").trim();
+    const branchCode = String(req.body.branch_code || "").trim();
+    const departmentId = asPositiveInt(req.body.department_id, 0);
+    const requestedProgramType = String(req.body.program_type || "").trim();
+
+    if (!branchId) {
+      return res.status(400).json({ message: "Invalid branch id" });
+    }
+
+    if (!branchName || !branchCode || !departmentId) {
+      return res.status(400).json({ message: "Branch name, code and department are required" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, program_type
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Branch not found" });
+    }
+
+    const programType = requestedProgramType
+      ? normalizeProgramType(requestedProgramType)
+      : String(existing.rows[0].program_type || "UG");
+
+    const department = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    if (department.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+
+    const duplicateName = await pool.query(
+      `SELECT id
+       FROM branches
+       WHERE id <> $1
+         AND department_id = $2
+         AND LOWER(branch_name) = LOWER($3)
+       LIMIT 1`,
+      [branchId, departmentId, branchName]
+    );
+    if (duplicateName.rowCount > 0) {
+      return res.status(409).json({ message: "Branch already exists in this department" });
+    }
+
+    const duplicateCode = await pool.query(
+      `SELECT id
+       FROM branches
+       WHERE id <> $1
+         AND department_id = $2
+         AND LOWER(branch_code) = LOWER($3)
+       LIMIT 1`,
+      [branchId, departmentId, branchCode]
+    );
+    if (duplicateCode.rowCount > 0) {
+      return res.status(409).json({ message: "Branch code already exists in this department" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE branches
+       SET branch_name = $1,
+           branch_code = $2,
+           department_id = $3,
+           program_type = $4
+       WHERE id = $5
+       RETURNING *`,
+      [branchName, branchCode, departmentId, programType, branchId]
+    );
+
+    await logActivity(req.user.userId, "Branch Updated", `branch=${branchName}, id=${branchId}`);
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Branch already exists in this department" });
+    }
+    if (isForeignKeyViolation(err)) {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/branches/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const branchId = asPositiveInt(req.params.id, 0);
+    if (!branchId) {
+      return res.status(400).json({ message: "Invalid branch id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, branch_name
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Branch not found" });
+    }
+
+    const dependencyResult = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM semesters WHERE branch_id = $1) AS has_semesters,
+         EXISTS(SELECT 1 FROM sections WHERE branch_id = $1) AS has_sections,
+         EXISTS(SELECT 1 FROM subjects WHERE branch_id = $1) AS has_subjects`,
+      [branchId]
+    );
+    const dependency = dependencyResult.rows[0] || {};
+
+    if (dependency.has_semesters || dependency.has_sections || dependency.has_subjects) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(`DELETE FROM branches WHERE id = $1`, [branchId]);
+    await logActivity(req.user.userId, "Branch Deleted", `branch=${existing.rows[0].branch_name}, id=${branchId}`);
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
     }
     return next(err);
   }
@@ -401,6 +665,134 @@ router.post("/sections", authRequired, async (req, res, next) => {
   }
 });
 
+router.put("/sections/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const sectionId = asPositiveInt(req.params.id, 0);
+    const sectionName = String(req.body.section_name || "").trim();
+    const branchId = asPositiveInt(req.body.branch_id, 0);
+    const semesterId = asPositiveInt(req.body.semester_id, 0);
+    const hasStudentStrength = req.body.student_strength !== undefined && req.body.student_strength !== null;
+
+    if (!sectionId) {
+      return res.status(400).json({ message: "Invalid section id" });
+    }
+
+    if (!sectionName || !branchId || !semesterId) {
+      return res.status(400).json({ message: "Section name, branch and semester are required" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, student_strength
+       FROM sections
+       WHERE id = $1`,
+      [sectionId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Section not found" });
+    }
+
+    const studentStrength = hasStudentStrength
+      ? asPositiveInt(req.body.student_strength, 0)
+      : asPositiveInt(existing.rows[0].student_strength, 60);
+    if (!studentStrength) {
+      return res.status(400).json({ message: "Student strength must be a positive number" });
+    }
+
+    const semester = await pool.query(
+      `SELECT id, branch_id
+       FROM semesters
+       WHERE id = $1`,
+      [semesterId]
+    );
+
+    if (semester.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid semester selected" });
+    }
+
+    if (Number(semester.rows[0].branch_id) !== branchId) {
+      return res.status(400).json({ message: "Selected semester does not belong to the selected branch" });
+    }
+
+    const duplicateSection = await pool.query(
+      `SELECT id
+       FROM sections
+       WHERE id <> $1
+         AND branch_id = $2
+         AND LOWER(section_name) = LOWER($3)
+       LIMIT 1`,
+      [sectionId, branchId, sectionName]
+    );
+    if (duplicateSection.rowCount > 0) {
+      return res.status(409).json({ message: "Section already exists in this branch" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE sections
+       SET section_name = $1,
+           branch_id = $2,
+           semester_id = $3,
+           student_strength = $4
+       WHERE id = $5
+       RETURNING *`,
+      [sectionName, branchId, semesterId, studentStrength, sectionId]
+    );
+
+    await logActivity(req.user.userId, "Section Updated", `section=${sectionName}, id=${sectionId}`);
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Section already exists in this branch" });
+    }
+    if (isForeignKeyViolation(err)) {
+      return res.status(400).json({ message: "Invalid branch or semester selected" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/sections/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const sectionId = asPositiveInt(req.params.id, 0);
+    if (!sectionId) {
+      return res.status(400).json({ message: "Invalid section id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, section_name
+       FROM sections
+       WHERE id = $1`,
+      [sectionId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Section not found" });
+    }
+
+    const dependency = await pool.query(
+      `SELECT 1
+       FROM timetable_entries
+       WHERE section_id = $1
+       LIMIT 1`,
+      [sectionId]
+    );
+    if (dependency.rowCount > 0) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(`DELETE FROM sections WHERE id = $1`, [sectionId]);
+    await logActivity(req.user.userId, "Section Deleted", `section=${existing.rows[0].section_name}, id=${sectionId}`);
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+    return next(err);
+  }
+});
+
 router.get("/faculty", authRequired, async (req, res, next) => {
   try {
     const { page, limit, offset } = parsePagination(req.query);
@@ -455,6 +847,125 @@ router.get("/faculty", authRequired, async (req, res, next) => {
   }
 });
 
+router.put("/faculty/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const facultyUserId = asPositiveInt(req.params.id, 0);
+    const facultyId = String(req.body.faculty_id || "").trim();
+    const fullName = String(req.body.full_name || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const mobileNumber = String(req.body.mobile_number || "").trim();
+
+    if (!facultyUserId) {
+      return res.status(400).json({ message: "Invalid faculty id" });
+    }
+
+    if (!facultyId || !fullName || !email || !mobileNumber) {
+      return res.status(400).json({ message: "Faculty ID, name, email and mobile number are required" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id
+       FROM faculty_users
+       WHERE id = $1
+         AND LOWER(role) = 'faculty'`,
+      [facultyUserId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Faculty record not found" });
+    }
+
+    const duplicate = await pool.query(
+      `SELECT id
+       FROM faculty_users
+       WHERE id <> $1
+         AND (
+           LOWER(faculty_id) = LOWER($2)
+           OR LOWER(email) = LOWER($3)
+           OR mobile_number = $4
+         )
+       LIMIT 1`,
+      [facultyUserId, facultyId, email, mobileNumber]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ message: "Faculty ID, email or mobile number already exists" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE faculty_users
+       SET faculty_id = $1,
+           full_name = $2,
+           email = $3,
+           mobile_number = $4
+       WHERE id = $5
+         AND LOWER(role) = 'faculty'
+       RETURNING id, faculty_id, full_name, email, mobile_number, role, created_at`,
+      [facultyId, fullName, email, mobileNumber, facultyUserId]
+    );
+
+    await logActivity(req.user.userId, "Faculty Updated", `faculty_id=${facultyId}, id=${facultyUserId}`);
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Faculty ID, email or mobile number already exists" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/faculty/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const facultyUserId = asPositiveInt(req.params.id, 0);
+    if (!facultyUserId) {
+      return res.status(400).json({ message: "Invalid faculty id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, faculty_id, full_name
+       FROM faculty_users
+       WHERE id = $1
+         AND LOWER(role) = 'faculty'`,
+      [facultyUserId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Faculty record not found" });
+    }
+
+    const dependency = await pool.query(
+      `SELECT 1
+       FROM faculty f
+       JOIN timetable_entries te ON te.faculty_id = f.id
+       WHERE LOWER(f.faculty_id) = LOWER($1)
+       LIMIT 1`,
+      [existing.rows[0].faculty_id]
+    );
+    if (dependency.rowCount > 0) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(
+      `DELETE FROM faculty_users
+       WHERE id = $1`,
+      [facultyUserId]
+    );
+
+    await logActivity(
+      req.user.userId,
+      "Faculty Deleted",
+      `faculty_id=${existing.rows[0].faculty_id}, id=${facultyUserId}`
+    );
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+    return next(err);
+  }
+});
+
 router.get("/subjects", authRequired, async (req, res, next) => {
   try {
     const { page, limit, offset } = parsePagination(req.query);
@@ -504,9 +1015,9 @@ router.post("/subjects", authRequired, async (req, res, next) => {
     const branchId = asPositiveInt(req.body.branch_id, 0);
     const semesterId = asPositiveInt(req.body.semester_id, 0);
     const subjectType = String(req.body.subject_type || "").trim();
-    const theoryHours = asPositiveInt(req.body.theory_hours_per_week, subjectType === "Practical" ? 0 : 3);
-    const practicalHours = asPositiveInt(req.body.practical_hours_per_week, subjectType === "Theory" ? 0 : 2);
-    const totalHours = asPositiveInt(req.body.total_hours_semester, theoryHours + practicalHours);
+    const hasTheoryHours = req.body.theory_hours_per_week !== undefined && req.body.theory_hours_per_week !== null;
+    const hasPracticalHours = req.body.practical_hours_per_week !== undefined && req.body.practical_hours_per_week !== null;
+    const hasTotalHours = req.body.total_hours_semester !== undefined && req.body.total_hours_semester !== null;
 
     if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !subjectType) {
       return res.status(400).json({
@@ -516,6 +1027,24 @@ router.post("/subjects", authRequired, async (req, res, next) => {
 
     if (!["Theory", "Practical", "Both"].includes(subjectType)) {
       return res.status(400).json({ message: "Subject type must be Theory, Practical or Both" });
+    }
+
+    const theoryHours = hasTheoryHours
+      ? asNonNegativeInt(req.body.theory_hours_per_week, -1)
+      : subjectType === "Practical"
+        ? 0
+        : 3;
+    const practicalHours = hasPracticalHours
+      ? asNonNegativeInt(req.body.practical_hours_per_week, -1)
+      : subjectType === "Theory"
+        ? 0
+        : 2;
+    const totalHours = hasTotalHours
+      ? asNonNegativeInt(req.body.total_hours_semester, -1)
+      : theoryHours + practicalHours;
+
+    if (theoryHours < 0 || practicalHours < 0 || totalHours < 0) {
+      return res.status(400).json({ message: "Hour values must be zero or positive integers" });
     }
 
     const branch = await pool.query(
@@ -577,6 +1106,175 @@ router.post("/subjects", authRequired, async (req, res, next) => {
     }
     if (err.code === "23503") {
       return res.status(400).json({ message: "Invalid department, branch or semester selected" });
+    }
+    return next(err);
+  }
+});
+
+router.put("/subjects/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const subjectId = asPositiveInt(req.params.id, 0);
+    const subjectName = String(req.body.subject_name || "").trim();
+    const subjectCode = String(req.body.subject_code || "").trim();
+    const departmentId = asPositiveInt(req.body.department_id, 0);
+    const branchId = asPositiveInt(req.body.branch_id, 0);
+    const semesterId = asPositiveInt(req.body.semester_id, 0);
+    const subjectType = String(req.body.subject_type || "").trim();
+    const hasTheoryHours = req.body.theory_hours_per_week !== undefined && req.body.theory_hours_per_week !== null;
+    const hasPracticalHours =
+      req.body.practical_hours_per_week !== undefined && req.body.practical_hours_per_week !== null;
+    const hasTotalHours = req.body.total_hours_semester !== undefined && req.body.total_hours_semester !== null;
+
+    if (!subjectId) {
+      return res.status(400).json({ message: "Invalid subject id" });
+    }
+
+    if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !subjectType) {
+      return res.status(400).json({
+        message: "Subject name, code, department, branch, semester and type are required",
+      });
+    }
+
+    if (!isValidSubjectType(subjectType)) {
+      return res.status(400).json({ message: "Subject type must be Theory, Practical or Both" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, theory_hours_per_week, practical_hours_per_week, total_hours_semester
+       FROM subjects
+       WHERE id = $1`,
+      [subjectId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Subject not found" });
+    }
+
+    const current = existing.rows[0];
+    const theoryHours = hasTheoryHours
+      ? asNonNegativeInt(req.body.theory_hours_per_week, -1)
+      : asNonNegativeInt(current.theory_hours_per_week, subjectType === "Practical" ? 0 : 3);
+    const practicalHours = hasPracticalHours
+      ? asNonNegativeInt(req.body.practical_hours_per_week, -1)
+      : asNonNegativeInt(current.practical_hours_per_week, subjectType === "Theory" ? 0 : 2);
+    const totalHours = hasTotalHours
+      ? asNonNegativeInt(req.body.total_hours_semester, -1)
+      : asNonNegativeInt(current.total_hours_semester, theoryHours + practicalHours);
+
+    if (theoryHours < 0 || practicalHours < 0 || totalHours < 0) {
+      return res.status(400).json({ message: "Hour values must be zero or positive integers" });
+    }
+
+    const branch = await pool.query(
+      `SELECT id, department_id
+       FROM branches
+       WHERE id = $1`,
+      [branchId]
+    );
+    if (branch.rowCount === 0 || Number(branch.rows[0].department_id) !== departmentId) {
+      return res.status(400).json({ message: "Selected branch does not belong to selected department" });
+    }
+
+    const semester = await pool.query(
+      `SELECT id, branch_id
+       FROM semesters
+       WHERE id = $1`,
+      [semesterId]
+    );
+    if (semester.rowCount === 0 || Number(semester.rows[0].branch_id) !== branchId) {
+      return res.status(400).json({ message: "Selected semester does not belong to selected branch" });
+    }
+
+    const duplicateCode = await pool.query(
+      `SELECT id
+       FROM subjects
+       WHERE id <> $1
+         AND branch_id = $2
+         AND LOWER(subject_code) = LOWER($3)
+       LIMIT 1`,
+      [subjectId, branchId, subjectCode]
+    );
+    if (duplicateCode.rowCount > 0) {
+      return res.status(409).json({ message: "Subject code already exists in this branch" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE subjects
+       SET subject_name = $1,
+           subject_code = $2,
+           department_id = $3,
+           branch_id = $4,
+           semester_id = $5,
+           subject_type = $6,
+           theory_hours_per_week = $7,
+           practical_hours_per_week = $8,
+           total_hours_semester = $9
+       WHERE id = $10
+       RETURNING *`,
+      [
+        subjectName,
+        subjectCode,
+        departmentId,
+        branchId,
+        semesterId,
+        subjectType,
+        theoryHours,
+        practicalHours,
+        totalHours,
+        subjectId,
+      ]
+    );
+
+    await logActivity(req.user.userId, "Subject Updated", `subject=${subjectName}, id=${subjectId}`);
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Subject code already exists in this branch" });
+    }
+    if (isForeignKeyViolation(err)) {
+      return res.status(400).json({ message: "Invalid department, branch or semester selected" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/subjects/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const subjectId = asPositiveInt(req.params.id, 0);
+    if (!subjectId) {
+      return res.status(400).json({ message: "Invalid subject id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, subject_name
+       FROM subjects
+       WHERE id = $1`,
+      [subjectId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Subject not found" });
+    }
+
+    const dependency = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM timetable_entries WHERE subject_id = $1) AS has_timetable_entries,
+         EXISTS(SELECT 1 FROM faculty_subjects WHERE subject_id = $1) AS has_faculty_mapping`,
+      [subjectId]
+    );
+    const inUse = dependency.rows[0] || {};
+    if (inUse.has_timetable_entries || inUse.has_faculty_mapping) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(`DELETE FROM subjects WHERE id = $1`, [subjectId]);
+    await logActivity(req.user.userId, "Subject Deleted", `subject=${existing.rows[0].subject_name}, id=${subjectId}`);
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
     }
     return next(err);
   }
@@ -659,6 +1357,122 @@ router.post("/semesters", authRequired, async (req, res, next) => {
   } catch (err) {
     if (err.code === "23505") {
       return res.status(409).json({ message: "Semester already exists for this branch and academic year" });
+    }
+    return next(err);
+  }
+});
+
+router.put("/semesters/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const semesterId = asPositiveInt(req.params.id, 0);
+    const semesterNumber = asPositiveInt(req.body.semester_number, 0);
+    const academicYear = String(req.body.academic_year || "").trim();
+    const branchId = asPositiveInt(req.body.branch_id, 0);
+
+    if (!semesterId) {
+      return res.status(400).json({ message: "Invalid semester id" });
+    }
+
+    if (!semesterNumber || !academicYear || !branchId) {
+      return res.status(400).json({ message: "Semester number, academic year and branch are required" });
+    }
+
+    const existing = await pool.query(`SELECT id FROM semesters WHERE id = $1`, [semesterId]);
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Semester not found" });
+    }
+
+    const branch = await pool.query(`SELECT id FROM branches WHERE id = $1`, [branchId]);
+    if (branch.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid branch selected" });
+    }
+
+    const duplicate = await pool.query(
+      `SELECT id
+       FROM semesters
+       WHERE id <> $1
+         AND branch_id = $2
+         AND semester_number = $3
+         AND academic_year = $4
+       LIMIT 1`,
+      [semesterId, branchId, semesterNumber, academicYear]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ message: "Semester already exists for this branch and academic year" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE semesters
+       SET semester_number = $1,
+           academic_year = $2,
+           branch_id = $3
+       WHERE id = $4
+       RETURNING *`,
+      [semesterNumber, academicYear, branchId, semesterId]
+    );
+
+    await logActivity(
+      req.user.userId,
+      "Semester Updated",
+      `semester=${semesterNumber}, year=${academicYear}, id=${semesterId}`
+    );
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Semester already exists for this branch and academic year" });
+    }
+    if (isForeignKeyViolation(err)) {
+      return res.status(400).json({ message: "Invalid branch selected" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/semesters/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const semesterId = asPositiveInt(req.params.id, 0);
+    if (!semesterId) {
+      return res.status(400).json({ message: "Invalid semester id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, semester_number, academic_year
+       FROM semesters
+       WHERE id = $1`,
+      [semesterId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Semester not found" });
+    }
+
+    const dependency = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM sections WHERE semester_id = $1) AS has_sections,
+         EXISTS(SELECT 1 FROM subjects WHERE semester_id = $1) AS has_subjects,
+         EXISTS(SELECT 1 FROM timetables WHERE semester_id = $1) AS has_timetables,
+         EXISTS(SELECT 1 FROM timetable_history WHERE semester_id = $1) AS has_history`,
+      [semesterId]
+    );
+    const inUse = dependency.rows[0] || {};
+
+    if (inUse.has_sections || inUse.has_subjects || inUse.has_timetables || inUse.has_history) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
+    }
+
+    await pool.query(`DELETE FROM semesters WHERE id = $1`, [semesterId]);
+    await logActivity(
+      req.user.userId,
+      "Semester Deleted",
+      `semester=${existing.rows[0].semester_number}, year=${existing.rows[0].academic_year}, id=${semesterId}`
+    );
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
+    if (isForeignKeyViolation(err)) {
+      return res.status(409).json({ message: "Cannot delete. Record is in use." });
     }
     return next(err);
   }

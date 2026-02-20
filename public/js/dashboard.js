@@ -28,6 +28,7 @@ const activityPageLabel = document.getElementById("activityPageLabel");
 const entityInfoPageLabel = document.getElementById("entityInfoPageLabel");
 const dashboardAlertId = "dashboardAlert";
 const genericApiErrorMessage = "Something went wrong. Please try again.";
+const operationFailedMessage = "Operation failed. Try again.";
 const inFlightListRequests = new Map();
 
 const bootstrapApi = window.bootstrap || null;
@@ -62,6 +63,9 @@ const state = {
   activePanel: "summaryPanel",
   activityLoaded: false,
   currentFormResource: null,
+  currentFormMode: "create",
+  currentFormRecordId: null,
+  returnToInfoAfterForm: false,
   history: { page: 1, limit: 8, total: 0, q: "", latestTimetableId: null },
   activity: { page: 1, limit: 10, total: 0, q: "" },
   info: { resource: null, page: 1, limit: 8, total: 0, q: "", rows: [] },
@@ -80,6 +84,8 @@ const entityOrder = [
   "subjects",
   "semesters",
 ];
+
+const infoCrudResources = new Set(["departments", "branches", "sections", "faculty", "subjects", "semesters"]);
 
 const entityConfig = {
   departments: {
@@ -227,6 +233,12 @@ const entityConfig = {
     infoLabel: "See Faculty Info",
     readOnly: true,
     addAction: "/signup.html",
+    formFields: [
+      { name: "faculty_id", label: "Faculty ID", type: "text", required: true },
+      { name: "full_name", label: "Full Name", type: "text", required: true },
+      { name: "email", label: "Email", type: "email", required: true },
+      { name: "mobile_number", label: "Mobile Number", type: "text", required: true },
+    ],
     columns: ["ID", "Faculty ID", "Name", "Departments", "Subjects", "Registered"],
     mapRow: (row) => [
       row.id,
@@ -259,6 +271,7 @@ const entityConfig = {
         staticOptions: [
           { value: "Theory", label: "Theory" },
           { value: "Practical", label: "Practical" },
+          { value: "Both", label: "Both" },
         ],
       },
     ],
@@ -574,6 +587,18 @@ function handleRequestError(err) {
   showToast(message, "danger");
 }
 
+function getOperationErrorMessage(err) {
+  const message = String(err?.message || "").trim();
+  if (!message || message.toLowerCase() === "request failed") {
+    return operationFailedMessage;
+  }
+  return message;
+}
+
+function canManageInfoResource(resourceKey) {
+  return isAdminUser() && infoCrudResources.has(resourceKey);
+}
+
 function renderTableRows(target, rows, formatter, emptyColspan = 6) {
   if (!target) return;
   if (!rows.length) {
@@ -816,7 +841,7 @@ function buildOptionsHtml(field, optionsByKey) {
 function renderForm(resourceKey, optionsByKey) {
   if (!entityFormBody || !entityFormTitle) return;
   const config = entityConfig[resourceKey];
-  entityFormTitle.textContent = config.addLabel;
+  entityFormTitle.textContent = state.currentFormMode === "edit" ? `Edit ${config.title}` : config.addLabel;
 
   entityFormBody.innerHTML = config.formFields
     .map((field) => {
@@ -849,6 +874,11 @@ function renderForm(resourceKey, optionsByKey) {
   if (yearInput && !yearInput.value) {
     const year = new Date().getFullYear();
     yearInput.value = `${year}-${String((year + 1) % 100).padStart(2, "0")}`;
+  }
+
+  const submitBtn = document.getElementById("entitySubmitBtn");
+  if (submitBtn) {
+    submitBtn.textContent = state.currentFormMode === "edit" ? "Update" : "Save";
   }
 
   bindDependentFormFilters(resourceKey);
@@ -929,24 +959,69 @@ function normalizePayload(resourceKey, payload) {
     }
   });
 
-  if (resourceKey === "sections" && converted.student_strength === undefined) {
-    converted.student_strength = 60;
-  }
-
-  if (resourceKey === "branches" && !converted.program_type) {
-    converted.program_type = "UG";
-  }
-
   return converted;
 }
 
-function closeEntityForm() {
+function setEntityFormFieldValue(fieldName, value, triggerChange = false) {
+  if (!entityFormBody) return;
+  const field = entityFormBody.querySelector(`[name="${fieldName}"]`);
+  if (!field) return;
+  field.value = value === undefined || value === null ? "" : String(value);
+  if (triggerChange && field.tagName === "SELECT") {
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+
+function populateEntityForm(resourceKey, row) {
+  const config = entityConfig[resourceKey];
+  if (!config?.formFields || !entityFormBody) return;
+
+  if (resourceKey === "subjects") {
+    setEntityFormFieldValue("department_id", row.department_id, true);
+    setEntityFormFieldValue("branch_id", row.branch_id, true);
+    setEntityFormFieldValue("semester_id", row.semester_id, true);
+  } else if (resourceKey === "sections") {
+    setEntityFormFieldValue("branch_id", row.branch_id, true);
+    setEntityFormFieldValue("semester_id", row.semester_id, true);
+  }
+
+  config.formFields.forEach((field) => {
+    if (resourceKey === "subjects" && ["department_id", "branch_id", "semester_id"].includes(field.name)) {
+      return;
+    }
+    if (resourceKey === "sections" && ["branch_id", "semester_id"].includes(field.name)) {
+      return;
+    }
+    setEntityFormFieldValue(field.name, row[field.name]);
+  });
+}
+
+function closeEntityForm({ restoreInfoModal = false } = {}) {
+  const shouldRestoreInfo =
+    restoreInfoModal &&
+    state.currentFormMode === "edit" &&
+    state.returnToInfoAfterForm &&
+    Boolean(state.info.resource);
+
   const entityForm = document.getElementById("entityForm");
   if (entityForm) {
     entityForm.reset();
   }
+  hideAlert(dashboardAlertId);
+
   state.currentFormResource = null;
+  state.currentFormMode = "create";
+  state.currentFormRecordId = null;
+  state.returnToInfoAfterForm = false;
+
   formModal.hide();
+  if (shouldRestoreInfo) {
+    infoModal.show();
+  }
+}
+
+function closeEntityInfoModal() {
+  infoModal.hide();
 }
 
 async function openEntityForm(resourceKey) {
@@ -963,29 +1038,94 @@ async function openEntityForm(resourceKey) {
 
   hideAlert(dashboardAlertId);
   state.currentFormResource = resourceKey;
+  state.currentFormMode = "create";
+  state.currentFormRecordId = null;
+  state.returnToInfoAfterForm = false;
+
   const optionsByKey = await getFormOptions(resourceKey);
   renderForm(resourceKey, optionsByKey);
+  formModal.show();
+}
+
+async function openEntityEditForm(resourceKey, recordId) {
+  const config = entityConfig[resourceKey];
+  if (!config?.formFields) {
+    showToast(operationFailedMessage, "danger");
+    return;
+  }
+
+  const normalizedId = Number(recordId);
+  const row = state.info.rows.find((item) => Number(item.id) === normalizedId);
+  if (!row) {
+    showToast(operationFailedMessage, "danger");
+    return;
+  }
+
+  hideAlert(dashboardAlertId);
+  state.currentFormResource = resourceKey;
+  state.currentFormMode = "edit";
+  state.currentFormRecordId = normalizedId;
+  state.returnToInfoAfterForm = true;
+
+  const optionsByKey = await getFormOptions(resourceKey);
+  renderForm(resourceKey, optionsByKey);
+  populateEntityForm(resourceKey, row);
+  closeEntityInfoModal();
   formModal.show();
 }
 
 function renderEntityInfoTableHeader(resourceKey) {
   if (!entityInfoHead) return;
   const config = entityConfig[resourceKey];
-  entityInfoHead.innerHTML = `<tr>${config.columns.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}</tr>`;
+  const showActions = canManageInfoResource(resourceKey);
+  entityInfoHead.innerHTML = `
+    <tr>
+      ${config.columns.map((label) => `<th>${escapeHtml(label)}</th>`).join("")}
+      ${showActions ? '<th class="text-end">Actions</th>' : ""}
+    </tr>
+  `;
 }
 
 function renderEntityInfoRows(resourceKey, rows) {
   if (!entityInfoBody) return;
   const config = entityConfig[resourceKey];
+  const showActions = canManageInfoResource(resourceKey);
+  const colspan = config.columns.length + (showActions ? 1 : 0);
+
   if (!rows.length) {
-    entityInfoBody.innerHTML = `<tr><td colspan="${config.columns.length}" class="text-secondary">No records found.</td></tr>`;
+    entityInfoBody.innerHTML = `<tr><td colspan="${colspan}" class="text-secondary">No records found.</td></tr>`;
     return;
   }
 
   entityInfoBody.innerHTML = rows
     .map((row) => {
       const values = config.mapRow(row).map((value) => `<td>${escapeHtml(value)}</td>`).join("");
-      return `<tr>${values}</tr>`;
+      const actions = showActions
+        ? `
+          <td class="text-end">
+            <div class="d-flex justify-content-end flex-wrap gap-1">
+              <button
+                type="button"
+                class="btn btn-outline-primary btn-sm"
+                data-entity-row-action="edit"
+                data-entity-row-id="${escapeHtml(row.id)}"
+              >
+                Edit
+              </button>
+              <button
+                type="button"
+                class="btn btn-outline-danger btn-sm"
+                data-entity-row-action="delete"
+                data-entity-row-id="${escapeHtml(row.id)}"
+              >
+                Delete
+              </button>
+            </div>
+          </td>
+        `
+        : "";
+
+      return `<tr>${values}${actions}</tr>`;
     })
     .join("");
 }
@@ -994,7 +1134,8 @@ function renderEntityInfoLoading(resourceKey) {
   if (!entityInfoBody) return;
   const config = entityConfig[resourceKey];
   if (!config) return;
-  entityInfoBody.innerHTML = `<tr><td colspan="${config.columns.length}" class="text-secondary">Loading...</td></tr>`;
+  const colspan = config.columns.length + (canManageInfoResource(resourceKey) ? 1 : 0);
+  entityInfoBody.innerHTML = `<tr><td colspan="${colspan}" class="text-secondary">Loading...</td></tr>`;
 }
 
 function updatePager({ page, limit, total }, labelEl, prevBtnId, nextBtnId) {
@@ -1055,6 +1196,18 @@ async function openEntityInfo(resourceKey) {
   renderEntityInfoLoading(resourceKey);
   infoModal.show();
   await loadEntityInfo();
+}
+
+async function deleteEntityRecord(resourceKey, recordId) {
+  const config = entityConfig[resourceKey];
+  if (!config) {
+    throw new Error(operationFailedMessage);
+  }
+
+  await apiRequest(`${config.endpoint}/${recordId}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
 }
 
 function csvEscape(value) {
@@ -1252,12 +1405,24 @@ function bindEntityFormCloseActions() {
     button.dataset.formCloseBound = "true";
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      closeEntityForm();
+      closeEntityForm({ restoreInfoModal: true });
+    });
+  });
+}
+
+function bindEntityInfoCloseActions() {
+  document.querySelectorAll("[data-entity-info-close]").forEach((button) => {
+    if (button.dataset.infoCloseBound === "true") return;
+    button.dataset.infoCloseBound = "true";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeEntityInfoModal();
     });
   });
 }
 
 bindEntityFormCloseActions();
+bindEntityInfoCloseActions();
 
 document.querySelectorAll(".dashboard-tab-link").forEach((btn) => {
   btn.addEventListener("click", () => switchPanel(btn.dataset.tabTarget));
@@ -1287,6 +1452,8 @@ if (entityForm) {
     hideAlert(dashboardAlertId);
 
     const resource = state.currentFormResource;
+    const mode = state.currentFormMode;
+    const recordId = state.currentFormRecordId;
     if (!resource || !entityConfig[resource]) return;
 
     const formData = new FormData(entityForm);
@@ -1295,34 +1462,57 @@ if (entityForm) {
     if (!submitBtn) return;
 
     submitBtn.disabled = true;
-    submitBtn.textContent = "Saving...";
+    submitBtn.textContent = mode === "edit" ? "Updating..." : "Saving...";
 
     try {
+      const endpoint = mode === "edit" ? `${entityConfig[resource].endpoint}/${recordId}` : entityConfig[resource].endpoint;
+      const method = mode === "edit" ? "PUT" : "POST";
+
+      if (mode === "edit" && (!Number.isInteger(recordId) || recordId <= 0)) {
+        throw new Error(operationFailedMessage);
+      }
+
       await withLoading(() =>
-        apiRequest(entityConfig[resource].endpoint, {
-          method: "POST",
+        apiRequest(endpoint, {
+          method,
           headers: authHeaders(),
           body: JSON.stringify(payload),
         })
       );
 
-      closeEntityForm();
-      showToast(`${entityConfig[resource].title} saved successfully.`, "success");
+      if (mode === "edit") {
+        await withLoading(async () => {
+          if (state.info.resource === resource) {
+            await loadEntityInfo();
+          }
+          if (resource === "semesters" || resource === "branches") {
+            await loadSemesterOptionsForGenerator();
+          }
+        });
 
-      await withLoading(async () => {
-        await loadSummary();
-        if (state.info.resource === resource) {
-          await loadEntityInfo();
-        }
-        if (resource === "semesters" || resource === "branches") {
-          await loadSemesterOptionsForGenerator();
-        }
-      });
+        closeEntityForm({ restoreInfoModal: true });
+        showToast("Updated successfully", "success");
+      } else {
+        closeEntityForm();
+        showToast(`${entityConfig[resource].title} saved successfully.`, "success");
+
+        await withLoading(async () => {
+          await loadSummary();
+          if (state.info.resource === resource) {
+            await loadEntityInfo();
+          }
+          if (resource === "semesters" || resource === "branches") {
+            await loadSemesterOptionsForGenerator();
+          }
+        });
+      }
     } catch (err) {
-      handleRequestError(err);
+      const message = mode === "edit" ? getOperationErrorMessage(err) : getRequestErrorMessage(err);
+      showAlert(dashboardAlertId, message);
+      showToast(message, "danger");
     } finally {
       submitBtn.disabled = false;
-      submitBtn.textContent = "Save";
+      submitBtn.textContent = mode === "edit" ? "Update" : "Save";
     }
   });
 }
@@ -1350,6 +1540,58 @@ bindClick("entityInfoNext", () => {
 });
 
 bindClick("entityExportBtn", exportEntityInfoCsv);
+
+if (entityInfoBody) {
+  entityInfoBody.addEventListener("click", async (event) => {
+    const actionBtn = event.target.closest("[data-entity-row-action]");
+    if (!actionBtn) return;
+
+    const resourceKey = state.info.resource;
+    const config = entityConfig[resourceKey];
+    if (!config || !canManageInfoResource(resourceKey)) return;
+
+    const action = actionBtn.dataset.entityRowAction;
+    const recordId = Number(actionBtn.dataset.entityRowId);
+    if (!Number.isInteger(recordId) || recordId <= 0) return;
+
+    if (action === "edit") {
+      try {
+        await withLoading(() => openEntityEditForm(resourceKey, recordId));
+      } catch (err) {
+        const message = getOperationErrorMessage(err);
+        showToast(message, "danger");
+      }
+      return;
+    }
+
+    if (action === "delete") {
+      const confirmed = window.confirm("Are you sure you want to delete this record?");
+      if (!confirmed) return;
+
+      try {
+        await withLoading(() => deleteEntityRecord(resourceKey, recordId));
+        showToast("Deleted successfully", "success");
+
+        const projectedTotal = Math.max(0, state.info.total - 1);
+        const projectedMaxPage = Math.max(1, Math.ceil(projectedTotal / state.info.limit));
+        if (state.info.page > projectedMaxPage) {
+          state.info.page = projectedMaxPage;
+        }
+
+        await withLoading(async () => {
+          await loadEntityInfo();
+          await loadSummary();
+          if (resourceKey === "branches" || resourceKey === "semesters") {
+            await loadSemesterOptionsForGenerator();
+          }
+        });
+      } catch (err) {
+        const message = getOperationErrorMessage(err);
+        showToast(message, "danger");
+      }
+    }
+  });
+}
 
 const generateForm = document.getElementById("generateTimetableForm");
 const generateBtn = document.getElementById("generateBtn");
