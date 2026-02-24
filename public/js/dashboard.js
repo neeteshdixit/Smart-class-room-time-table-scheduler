@@ -74,7 +74,6 @@ const state = {
 
 const entityOrder = [
   "departments",
-  "department_schedule_config",
   "branches",
   "sections",
   "blocks",
@@ -88,7 +87,6 @@ const entityOrder = [
 
 const infoCrudResources = new Set([
   "departments",
-  "department_schedule_config",
   "branches",
   "sections",
   "faculty",

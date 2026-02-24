@@ -159,6 +159,59 @@ async function tableHasColumn(queryable, tableName, columnName, schema = "public
   return Boolean(result.rows[0]?.has_column);
 }
 
+async function tableExists(queryable, tableName, schema = "public") {
+  const result = await queryable.query(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM information_schema.tables
+       WHERE table_schema = $1
+         AND table_name = $2
+     ) AS has_table`,
+    [schema, tableName]
+  );
+  return Boolean(result.rows[0]?.has_table);
+}
+
+async function loadAvailableTimeSlots(queryable, departmentId) {
+  const hasTimeSlotsTable = await tableExists(queryable, "time_slots");
+  if (!hasTimeSlotsTable) {
+    return [];
+  }
+
+  const hasDepartmentColumn = await tableHasColumn(queryable, "time_slots", "department_id");
+  if (!hasDepartmentColumn) {
+    const result = await queryable.query(
+      `SELECT id, day_of_week, start_time, end_time, slot_number
+       FROM time_slots
+       ORDER BY day_of_week, slot_number, id`
+    );
+    return result.rows;
+  }
+
+  const result = await queryable.query(
+    `SELECT id, day_of_week, start_time, end_time, slot_number
+     FROM (
+       SELECT ts.id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number,
+              ROW_NUMBER() OVER (
+                PARTITION BY ts.day_of_week, ts.slot_number
+                ORDER BY
+                  CASE
+                    WHEN ts.department_id = $1 THEN 0
+                    WHEN ts.department_id IS NULL THEN 1
+                    ELSE 2
+                  END,
+                  ts.id
+              ) AS slot_rank
+       FROM time_slots ts
+     ) ranked
+     WHERE ranked.slot_rank = 1
+     ORDER BY day_of_week, slot_number, id`,
+    [departmentId]
+  );
+
+  return result.rows;
+}
+
 function buildDepartmentSlotTemplates(scheduleConfig) {
   const startMinutes = toTimeMinutes(scheduleConfig.start_time);
   const endMinutes = toTimeMinutes(scheduleConfig.end_time);
@@ -373,20 +426,6 @@ async function generateTimetableHandler(req, res, next) {
     }
     const departmentId = Number(semesterMetaResult.rows[0].department_id);
 
-    const departmentScheduleResult = await client.query(
-      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days
-       FROM department_schedule_config
-       WHERE department_id = $1
-       LIMIT 1`,
-      [departmentId]
-    );
-    if (departmentScheduleResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        message: "No department working hours configured. Configure Department Working Hours before generating.",
-      });
-    }
-
     const semesterDurationResult = await client.query(
       `SELECT start_date, end_date
        FROM semester_durations
@@ -452,16 +491,10 @@ async function generateTimetableHandler(req, res, next) {
       return res.status(400).json({ message: "No classrooms configured" });
     }
 
-    let slots = [];
-    try {
-      slots = await ensureDepartmentTimeSlots(client, departmentId, departmentScheduleResult.rows[0]);
-    } catch (scheduleError) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: scheduleError.message || "Invalid department schedule configuration" });
-    }
+    const slots = await loadAvailableTimeSlots(client, departmentId);
     if (!slots.length) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ message: "No valid slots generated from department schedule" });
+      return res.status(400).json({ message: "No time slots configured. Add time slots before generating timetable." });
     }
 
     const lectureRooms = roomsResult.rows.filter((room) => room.room_type === "Lecture");
@@ -788,7 +821,7 @@ async function fetchTimetableDetails(timetableId) {
     ? "te.session_mode"
     : "CASE WHEN c.room_type = 'Lab' THEN 'Practical' ELSE 'Theory' END";
 
-  const [entriesResult, departmentTimeslotsResult] = await Promise.all([
+  const [entriesResult, departmentTimeslots] = await Promise.all([
     pool.query(
       `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code,
               CASE WHEN sub.subject_type = 'Both' THEN 'Theory + Practical' ELSE sub.subject_type END AS subject_type,
@@ -805,16 +838,10 @@ async function fetchTimetableDetails(timetableId) {
        ORDER BY sec.section_name, ts.day_of_week, ts.slot_number`,
       [timetableId]
     ),
-    pool.query(
-      `SELECT id, day_of_week, start_time, end_time, slot_number
-       FROM time_slots
-       WHERE department_id = $1
-       ORDER BY day_of_week, slot_number`,
-      [timetable.department_id]
-    ),
+    loadAvailableTimeSlots(pool, Number(timetable.department_id)),
   ]);
 
-  let timeSlots = departmentTimeslotsResult.rows;
+  let timeSlots = departmentTimeslots;
   if (timeSlots.length === 0) {
     const fallbackTimeslotsResult = await pool.query(
       `SELECT ts.id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number

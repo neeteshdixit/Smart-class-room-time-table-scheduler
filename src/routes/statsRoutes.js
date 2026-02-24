@@ -4,7 +4,16 @@ const { authRequired } = require("../middleware/auth");
 
 const router = express.Router();
 
+async function tableExists(tableName) {
+  const result = await pool.query(`SELECT to_regclass($1) AS table_ref`, [`public.${tableName}`]);
+  return Boolean(result.rows[0]?.table_ref);
+}
+
 async function getCount(tableName) {
+  const exists = await tableExists(tableName);
+  if (!exists) {
+    return 0;
+  }
   const result = await pool.query(`SELECT COUNT(*)::int AS total FROM ${tableName}`);
   return result.rows[0].total;
 }
