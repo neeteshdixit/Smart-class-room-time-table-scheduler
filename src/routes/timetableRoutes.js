@@ -145,6 +145,20 @@ function getSessionDemands(subject, totalWeeks) {
   ].filter((item) => item.count > 0);
 }
 
+async function tableHasColumn(queryable, tableName, columnName, schema = "public") {
+  const result = await queryable.query(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = $1
+         AND table_name = $2
+         AND column_name = $3
+     ) AS has_column`,
+    [schema, tableName, columnName]
+  );
+  return Boolean(result.rows[0]?.has_column);
+}
+
 function buildDepartmentSlotTemplates(scheduleConfig) {
   const startMinutes = toTimeMinutes(scheduleConfig.start_time);
   const endMinutes = toTimeMinutes(scheduleConfig.end_time);
@@ -381,6 +395,7 @@ async function generateTimetableHandler(req, res, next) {
       [semesterId]
     );
     const totalWeeks = calculateTotalWeeks(semesterDurationResult.rows[0]);
+    const hasSessionModeColumn = await tableHasColumn(client, "timetable_entries", "session_mode");
 
     const sectionsResult = await client.query(
       `SELECT id, section_name, student_strength
@@ -597,24 +612,44 @@ async function generateTimetableHandler(req, res, next) {
     }
 
     for (const entry of entries) {
-      await client.query(
-        `INSERT INTO timetable_entries
-         (timetable_id, section_id, subject_id, faculty_id, classroom_id, timeslot_id, session_mode)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [
-          entry.timetable_id,
-          entry.section_id,
-          entry.subject_id,
-          entry.faculty_id,
-          entry.classroom_id,
-          entry.timeslot_id,
-          entry.session_mode,
-        ]
-      );
+      if (hasSessionModeColumn) {
+        await client.query(
+          `INSERT INTO timetable_entries
+           (timetable_id, section_id, subject_id, faculty_id, classroom_id, timeslot_id, session_mode)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            entry.timetable_id,
+            entry.section_id,
+            entry.subject_id,
+            entry.faculty_id,
+            entry.classroom_id,
+            entry.timeslot_id,
+            entry.session_mode,
+          ]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO timetable_entries
+           (timetable_id, section_id, subject_id, faculty_id, classroom_id, timeslot_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            entry.timetable_id,
+            entry.section_id,
+            entry.subject_id,
+            entry.faculty_id,
+            entry.classroom_id,
+            entry.timeslot_id,
+          ]
+        );
+      }
     }
 
+    const sessionModeSelect = hasSessionModeColumn
+      ? "te.session_mode"
+      : "CASE WHEN c.room_type = 'Lab' THEN 'Practical' ELSE 'Theory' END";
+
     const exportRowsResult = await client.query(
-      `SELECT sec.section_name, sub.subject_name, te.session_mode, f.full_name AS faculty_name, c.room_number,
+      `SELECT sec.section_name, sub.subject_name, ${sessionModeSelect} AS session_mode, f.full_name AS faculty_name, c.room_number,
               ts.day_of_week, ts.slot_number
        FROM timetable_entries te
        JOIN sections sec ON sec.id = te.section_id
@@ -748,12 +783,16 @@ async function fetchTimetableDetails(timetableId) {
   }
 
   const timetable = timetableResult.rows[0];
+  const hasSessionModeColumn = await tableHasColumn(pool, "timetable_entries", "session_mode");
+  const sessionModeSelect = hasSessionModeColumn
+    ? "te.session_mode"
+    : "CASE WHEN c.room_type = 'Lab' THEN 'Practical' ELSE 'Theory' END";
 
   const [entriesResult, departmentTimeslotsResult] = await Promise.all([
     pool.query(
       `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code,
               CASE WHEN sub.subject_type = 'Both' THEN 'Theory + Practical' ELSE sub.subject_type END AS subject_type,
-              te.session_mode,
+              ${sessionModeSelect} AS session_mode,
               te.faculty_id, f.full_name AS faculty_name, te.classroom_id, c.room_number,
               ts.id AS timeslot_id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number
        FROM timetable_entries te
