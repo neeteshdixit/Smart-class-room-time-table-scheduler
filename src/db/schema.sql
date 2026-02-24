@@ -515,9 +515,9 @@ CREATE TABLE IF NOT EXISTS timetable_entries (
     timeslot_id INTEGER NOT NULL REFERENCES time_slots(id) ON DELETE RESTRICT,
     session_mode VARCHAR(20) NOT NULL DEFAULT 'Theory' CHECK (session_mode IN ('Theory', 'Practical')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE (faculty_id, timeslot_id),
-    UNIQUE (classroom_id, timeslot_id),
-    UNIQUE (section_id, timeslot_id)
+    CONSTRAINT uq_timetable_entries_faculty_slot UNIQUE (timetable_id, faculty_id, timeslot_id),
+    CONSTRAINT uq_timetable_entries_room_slot UNIQUE (timetable_id, classroom_id, timeslot_id),
+    CONSTRAINT uq_timetable_entries_section_slot UNIQUE (timetable_id, section_id, timeslot_id)
 );
 
 DO $$
@@ -562,6 +562,63 @@ BEGIN
     ALTER TABLE timetable_entries
     ADD CONSTRAINT timetable_entries_session_mode_check
     CHECK (session_mode IN ('Theory', 'Practical'));
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'timetable_entries_faculty_id_timeslot_id_key'
+    ) THEN
+        ALTER TABLE timetable_entries
+        DROP CONSTRAINT timetable_entries_faculty_id_timeslot_id_key;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'timetable_entries_classroom_id_timeslot_id_key'
+    ) THEN
+        ALTER TABLE timetable_entries
+        DROP CONSTRAINT timetable_entries_classroom_id_timeslot_id_key;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'timetable_entries_section_id_timeslot_id_key'
+    ) THEN
+        ALTER TABLE timetable_entries
+        DROP CONSTRAINT timetable_entries_section_id_timeslot_id_key;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_timetable_entries_faculty_slot'
+    ) THEN
+        ALTER TABLE timetable_entries
+        ADD CONSTRAINT uq_timetable_entries_faculty_slot
+        UNIQUE (timetable_id, faculty_id, timeslot_id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_timetable_entries_room_slot'
+    ) THEN
+        ALTER TABLE timetable_entries
+        ADD CONSTRAINT uq_timetable_entries_room_slot
+        UNIQUE (timetable_id, classroom_id, timeslot_id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_timetable_entries_section_slot'
+    ) THEN
+        ALTER TABLE timetable_entries
+        ADD CONSTRAINT uq_timetable_entries_section_slot
+        UNIQUE (timetable_id, section_id, timeslot_id);
+    END IF;
 END $$;
 
 CREATE TABLE IF NOT EXISTS approvals (

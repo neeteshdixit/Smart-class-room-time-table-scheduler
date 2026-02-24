@@ -215,6 +215,10 @@ h6,
   background: linear-gradient(145deg, #eff6ff, #dbeafe);
 }
 
+.entity-tone-department-schedule {
+  background: linear-gradient(145deg, #fef9c3, #fde68a);
+}
+
 .entity-tone-branches {
   background: linear-gradient(145deg, #ecfeff, #cffafe);
 }

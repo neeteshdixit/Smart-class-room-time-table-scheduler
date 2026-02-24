@@ -74,6 +74,7 @@ const state = {
 
 const entityOrder = [
   "departments",
+  "department_schedule_config",
   "branches",
   "sections",
   "blocks",
@@ -85,7 +86,15 @@ const entityOrder = [
   "semesters",
 ];
 
-const infoCrudResources = new Set(["departments", "branches", "sections", "faculty", "subjects", "semesters"]);
+const infoCrudResources = new Set([
+  "departments",
+  "department_schedule_config",
+  "branches",
+  "sections",
+  "faculty",
+  "subjects",
+  "semesters",
+]);
 
 const entityConfig = {
   departments: {
@@ -103,6 +112,52 @@ const entityConfig = {
     ],
     columns: ["ID", "Name", "Code", "HOD"],
     mapRow: (row) => [row.id, row.department_name, row.department_code, row.hod_name || "-"],
+  },
+  department_schedule_config: {
+    title: "Department Working Hours",
+    endpoint: "/department-schedule-config",
+    countKey: "department_schedule_config",
+    tone: "entity-tone-department-schedule",
+    addLabel: "Configure Hours",
+    infoLabel: "See Working Hours",
+    formFields: [
+      { name: "department_id", label: "Department", type: "select", optionsKey: "departments", required: true },
+      { name: "start_time", label: "Start Time", type: "time", required: true },
+      { name: "end_time", label: "End Time", type: "time", required: true },
+      { name: "slot_duration_minutes", label: "Slot Duration (min)", type: "number", required: true, min: 1 },
+      {
+        name: "working_days",
+        label: "Working Days",
+        type: "select",
+        required: true,
+        staticOptions: [
+          { value: "Mon-Fri", label: "Mon-Fri" },
+          { value: "Mon-Sat", label: "Mon-Sat" },
+        ],
+      },
+      { name: "break_start_time", label: "Break Start Time", type: "time" },
+      { name: "break_duration_minutes", label: "Break Duration (min)", type: "number", required: true, min: 0 },
+    ],
+    columns: [
+      "ID",
+      "Department",
+      "Start",
+      "End",
+      "Slot Min",
+      "Break Start",
+      "Break Min",
+      "Days",
+    ],
+    mapRow: (row) => [
+      row.id,
+      row.department_name,
+      formatClockTime(row.start_time),
+      formatClockTime(row.end_time),
+      row.slot_duration_minutes,
+      row.break_start_time ? formatClockTime(row.break_start_time) : "-",
+      row.break_duration_minutes,
+      row.working_days,
+    ],
   },
   branches: {
     title: "Branches",
@@ -271,11 +326,26 @@ const entityConfig = {
         staticOptions: [
           { value: "Theory", label: "Theory" },
           { value: "Practical", label: "Practical" },
-          { value: "Both", label: "Both" },
+          { value: "Theory + Practical", label: "Theory + Practical" },
         ],
       },
+      { name: "total_hours", label: "Total Semester Hours", type: "number", required: true, min: 1 },
+      { name: "theory_hours", label: "Theory Hours", type: "number", min: 0 },
+      { name: "practical_hours", label: "Practical Hours", type: "number", min: 0 },
     ],
-    columns: ["ID", "Name", "Code", "Department", "Branch", "Semester", "Type"],
+    columns: [
+      "ID",
+      "Name",
+      "Code",
+      "Department",
+      "Branch",
+      "Semester",
+      "Type",
+      "Total",
+      "Weekly (Auto)",
+      "Theory",
+      "Practical",
+    ],
     mapRow: (row) => [
       row.id,
       row.subject_name,
@@ -284,6 +354,10 @@ const entityConfig = {
       row.branch_name,
       `${row.semester_number} (${row.academic_year})`,
       row.subject_type,
+      row.total_hours ?? row.total_hours_semester ?? 0,
+      row.weekly_hours ?? "-",
+      row.theory_hours ?? row.theory_hours_per_week ?? 0,
+      row.practical_hours ?? row.practical_hours_per_week ?? 0,
     ],
   },
   semesters: {
@@ -331,6 +405,19 @@ function dayOfWeekLabel(day) {
   return map[Number(day)] || String(day || "-");
 }
 
+function dayOfWeekShortLabel(day) {
+  const map = {
+    1: "Mo",
+    2: "Tu",
+    3: "We",
+    4: "Th",
+    5: "Fr",
+    6: "Sa",
+    7: "Su",
+  };
+  return map[Number(day)] || String(day || "-");
+}
+
 function formatClockTime(value) {
   if (!value) return "-";
   const [hRaw, mRaw] = String(value).split(":");
@@ -353,18 +440,18 @@ function toTimeMinutes(value) {
   return hour * 60 + minute;
 }
 
-function detectLunchInsertIndex(slotColumns) {
+function detectBreakInsertIndex(slotColumns) {
   if (!slotColumns.length) return 0;
 
   for (let i = 0; i < slotColumns.length - 1; i += 1) {
     const endCurrent = toTimeMinutes(slotColumns[i].end_time);
     const startNext = toTimeMinutes(slotColumns[i + 1].start_time);
-    if (endCurrent !== null && startNext !== null && endCurrent <= 780 && startNext >= 780) {
+    if (endCurrent !== null && startNext !== null && startNext - endCurrent > 1) {
       return i + 1;
     }
   }
 
-  return Math.ceil(slotColumns.length / 2);
+  return 0;
 }
 
 function renderTimetablePlaceholder(message = "Generate or select a timetable to view.") {
@@ -384,7 +471,8 @@ function buildTimetableCell(entry) {
     return '<td><div class="timetable-cell text-secondary">-</div></td>';
   }
 
-  const cellClass = String(entry.subject_type || "").toLowerCase() === "practical"
+  const modeToken = String(entry.session_mode || entry.subject_type || "").toLowerCase();
+  const cellClass = modeToken.includes("practical")
     ? "timetable-cell-practical"
     : "timetable-cell-theory";
 
@@ -448,7 +536,16 @@ function renderTimetableGrid(detail, preferredSectionId = null) {
     return;
   }
 
-  const lunchInsertIndex = detectLunchInsertIndex(slotColumns);
+  const breakInsertIndex = detectBreakInsertIndex(slotColumns);
+  const workingDayNumbers = Array.from(
+    new Set(timeSlots.map((slot) => Number(slot.day_of_week)).filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))
+  ).sort((a, b) => a - b);
+
+  if (!workingDayNumbers.length) {
+    renderTimetablePlaceholder("No working days configured.");
+    return;
+  }
+
   const timeSlotByDayAndNumber = new Map(
     timeSlots.map((slot) => [`${slot.day_of_week}-${slot.slot_number}`, slot])
   );
@@ -464,28 +561,23 @@ function renderTimetableGrid(detail, preferredSectionId = null) {
           <div class="small fw-normal">${escapeHtml(formatClockTime(slot.start_time))} - ${escapeHtml(formatClockTime(slot.end_time))}</div>
         </th>
       `;
-      if (index === lunchInsertIndex - 1) {
-        return `${header}<th class="timetable-lunch-col">Lunch Break</th>`;
+      if (breakInsertIndex > 0 && index === breakInsertIndex - 1) {
+        return `${header}<th class="timetable-lunch-col">Break</th>`;
       }
       return header;
     })
     .join("");
 
-  const dayRows = [
-    { id: 1, label: "Mo" },
-    { id: 2, label: "Tu" },
-    { id: 3, label: "We" },
-    { id: 4, label: "Th" },
-    { id: 5, label: "Fr" },
-  ]
+  const dayRows = workingDayNumbers
+    .map((dayNumber) => ({ id: dayNumber, label: dayOfWeekShortLabel(dayNumber) }))
     .map((day) => {
       const cells = slotColumns
         .map((slot, index) => {
           const daySlot = timeSlotByDayAndNumber.get(`${day.id}-${slot.slot_number}`);
           const entry = daySlot ? entryByTimeslotId.get(Number(daySlot.id)) : null;
           const cellHtml = buildTimetableCell(entry);
-          if (index === lunchInsertIndex - 1) {
-            return `${cellHtml}<td class="timetable-lunch-col">LUNCH</td>`;
+          if (breakInsertIndex > 0 && index === breakInsertIndex - 1) {
+            return `${cellHtml}<td class="timetable-lunch-col">BREAK</td>`;
           }
           return cellHtml;
         })
@@ -848,7 +940,7 @@ function renderForm(resourceKey, optionsByKey) {
       const required = field.required ? "required" : "";
       if (field.type === "select") {
         return `
-          <div class="col-md-6">
+          <div class="col-md-6" data-field-container="${escapeHtml(field.name)}">
             <label class="form-label">${escapeHtml(field.label)}</label>
             <select class="form-select" name="${escapeHtml(field.name)}" ${required}>
               <option value="">Select ${escapeHtml(field.label)}</option>
@@ -862,7 +954,7 @@ function renderForm(resourceKey, optionsByKey) {
       const maxAttr = field.max !== undefined ? `max="${field.max}"` : "";
       const placeholder = field.placeholder ? `placeholder="${escapeHtml(field.placeholder)}"` : "";
       return `
-        <div class="col-md-6">
+        <div class="col-md-6" data-field-container="${escapeHtml(field.name)}">
           <label class="form-label">${escapeHtml(field.label)}</label>
           <input class="form-control" type="${escapeHtml(field.type)}" name="${escapeHtml(field.name)}" ${required} ${placeholder} ${minAttr} ${maxAttr} />
         </div>
@@ -874,6 +966,13 @@ function renderForm(resourceKey, optionsByKey) {
   if (yearInput && !yearInput.value) {
     const year = new Date().getFullYear();
     yearInput.value = `${year}-${String((year + 1) % 100).padStart(2, "0")}`;
+  }
+
+  if (resourceKey === "department_schedule_config") {
+    const breakDurationInput = entityFormBody.querySelector('input[name="break_duration_minutes"]');
+    if (breakDurationInput && !breakDurationInput.value) {
+      breakDurationInput.value = "0";
+    }
   }
 
   const submitBtn = document.getElementById("entitySubmitBtn");
@@ -900,6 +999,31 @@ function filterOptions(selectEl, dataKey, parentValue) {
   }
 }
 
+function applySubjectTypeFieldVisibility() {
+  if (!entityFormBody) return;
+
+  const subjectTypeSelect = entityFormBody.querySelector('select[name="subject_type"]');
+  if (!subjectTypeSelect) return;
+
+  const selectedType = String(subjectTypeSelect.value || "").trim();
+  const isTheoryPractical = selectedType === "Theory + Practical" || selectedType === "Both";
+
+  const theoryContainer = entityFormBody.querySelector('[data-field-container="theory_hours"]');
+  const practicalContainer = entityFormBody.querySelector('[data-field-container="practical_hours"]');
+  const theoryInput = entityFormBody.querySelector('input[name="theory_hours"]');
+  const practicalInput = entityFormBody.querySelector('input[name="practical_hours"]');
+
+  if (theoryContainer) theoryContainer.classList.toggle("d-none", !isTheoryPractical);
+  if (practicalContainer) practicalContainer.classList.toggle("d-none", !isTheoryPractical);
+  if (theoryInput) theoryInput.required = isTheoryPractical;
+  if (practicalInput) practicalInput.required = isTheoryPractical;
+
+  if (!isTheoryPractical && state.currentFormMode === "create") {
+    if (theoryInput) theoryInput.value = "";
+    if (practicalInput) practicalInput.value = "";
+  }
+}
+
 function bindDependentFormFilters(resourceKey) {
   if (!entityFormBody) return;
   if (resourceKey === "sections") {
@@ -917,6 +1041,7 @@ function bindDependentFormFilters(resourceKey) {
     const departmentSelect = entityFormBody.querySelector('select[name="department_id"]');
     const branchSelect = entityFormBody.querySelector('select[name="branch_id"]');
     const semesterSelectEl = entityFormBody.querySelector('select[name="semester_id"]');
+    const subjectTypeSelect = entityFormBody.querySelector('select[name="subject_type"]');
 
     const applyBranch = () => {
       filterOptions(branchSelect, "departmentId", departmentSelect.value);
@@ -931,7 +1056,11 @@ function bindDependentFormFilters(resourceKey) {
     if (branchSelect && semesterSelectEl) {
       branchSelect.addEventListener("change", applySemester);
     }
+    if (subjectTypeSelect) {
+      subjectTypeSelect.addEventListener("change", applySubjectTypeFieldVisibility);
+    }
     applyBranch();
+    applySubjectTypeFieldVisibility();
   }
 }
 
@@ -939,13 +1068,14 @@ function normalizePayload(resourceKey, payload) {
   const converted = { ...payload };
 
   const toIntKeys = {
+    department_schedule_config: ["department_id", "slot_duration_minutes", "break_duration_minutes"],
     branches: ["department_id"],
     sections: ["branch_id", "semester_id"],
     blocks: ["number_of_floors"],
     classrooms: ["capacity", "block_id", "floor_number"],
     laboratories: ["department_id", "capacity", "lab_duration_preference"],
     time_slots: ["day_of_week", "slot_number"],
-    subjects: ["department_id", "branch_id", "semester_id"],
+    subjects: ["department_id", "branch_id", "semester_id", "total_hours", "theory_hours", "practical_hours"],
     semesters: ["branch_id", "semester_number"],
   };
 
@@ -959,6 +1089,18 @@ function normalizePayload(resourceKey, payload) {
     }
   });
 
+  if (resourceKey === "subjects") {
+    const type = String(converted.subject_type || "").trim();
+    if (type !== "Theory + Practical" && type !== "Both") {
+      delete converted.theory_hours;
+      delete converted.practical_hours;
+    }
+  }
+
+  if (resourceKey === "department_schedule_config" && !String(converted.break_start_time || "").trim()) {
+    delete converted.break_start_time;
+  }
+
   return converted;
 }
 
@@ -966,7 +1108,11 @@ function setEntityFormFieldValue(fieldName, value, triggerChange = false) {
   if (!entityFormBody) return;
   const field = entityFormBody.querySelector(`[name="${fieldName}"]`);
   if (!field) return;
-  field.value = value === undefined || value === null ? "" : String(value);
+  let normalizedValue = value === undefined || value === null ? "" : String(value);
+  if (field.type === "time" && normalizedValue) {
+    normalizedValue = normalizedValue.slice(0, 5);
+  }
+  field.value = normalizedValue;
   if (triggerChange && field.tagName === "SELECT") {
     field.dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -994,6 +1140,10 @@ function populateEntityForm(resourceKey, row) {
     }
     setEntityFormFieldValue(field.name, row[field.name]);
   });
+
+  if (resourceKey === "subjects") {
+    applySubjectTypeFieldVisibility();
+  }
 }
 
 function closeEntityForm({ restoreInfoModal = false } = {}) {

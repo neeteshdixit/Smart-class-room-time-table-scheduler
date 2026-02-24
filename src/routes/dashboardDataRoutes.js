@@ -49,8 +49,90 @@ function normalizeProgramType(value) {
   return String(value || "UG").trim().toUpperCase() === "PG" ? "PG" : "UG";
 }
 
+function normalizeSubjectType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "theory") return "Theory";
+  if (normalized === "practical") return "Practical";
+  if (normalized === "both" || normalized === "theory + practical" || normalized === "theory+practical") {
+    return "Theory + Practical";
+  }
+  return "";
+}
+
 function isValidSubjectType(value) {
-  return ["Theory", "Practical", "Both"].includes(value);
+  return Boolean(normalizeSubjectType(value));
+}
+
+function normalizeWorkingDays(value) {
+  const raw = String(value || "").trim();
+  if (raw === "Mon-Fri" || raw === "Mon-Sat") {
+    return raw;
+  }
+  return "";
+}
+
+function normalizeTimeValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/.exec(text);
+  if (!match) return "";
+  const seconds = match[3] || "00";
+  return `${match[1]}:${match[2]}:${seconds}`;
+}
+
+function toTimeMinutes(value) {
+  const normalized = normalizeTimeValue(value);
+  if (!normalized) return null;
+  const [hour, minute] = normalized.split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return hour * 60 + minute;
+}
+
+function validateDepartmentScheduleWindow({
+  startTime,
+  endTime,
+  breakStartTime,
+  breakDurationMinutes,
+  slotDurationMinutes,
+}) {
+  const startMinutes = toTimeMinutes(startTime);
+  const endMinutes = toTimeMinutes(endTime);
+
+  if (startMinutes === null || endMinutes === null) {
+    return "Start time and end time must be valid";
+  }
+
+  if (endMinutes <= startMinutes) {
+    return "End time must be greater than start time";
+  }
+
+  if (!Number.isInteger(slotDurationMinutes) || slotDurationMinutes <= 0) {
+    return "Slot duration must be a positive integer";
+  }
+
+  if (slotDurationMinutes > endMinutes - startMinutes) {
+    return "Slot duration is larger than the configured working window";
+  }
+
+  if (!Number.isInteger(breakDurationMinutes) || breakDurationMinutes < 0) {
+    return "Break duration must be a non-negative integer";
+  }
+
+  if (breakDurationMinutes === 0) {
+    return "";
+  }
+
+  const breakStartMinutes = toTimeMinutes(breakStartTime);
+  if (breakStartMinutes === null) {
+    return "Break start time is required when break duration is greater than zero";
+  }
+
+  const breakEndMinutes = breakStartMinutes + breakDurationMinutes;
+  if (breakStartMinutes < startMinutes || breakEndMinutes > endMinutes) {
+    return "Break must be within configured working hours";
+  }
+
+  return "";
 }
 
 function isForeignKeyViolation(err) {
@@ -340,6 +422,271 @@ router.delete("/departments/:id", authRequired, async (req, res, next) => {
     if (isForeignKeyViolation(err)) {
       return res.status(409).json({ message: "Cannot delete. Record is in use." });
     }
+    return next(err);
+  }
+});
+
+router.get("/department-schedule-config", authRequired, async (req, res, next) => {
+  try {
+    const { page, limit, offset } = parsePagination(req.query);
+    const q = buildSearchTerm(req.query.q);
+
+    const response = await listWithPagination({
+      page,
+      limit,
+      querySql: `
+        SELECT dsc.id, dsc.department_id, dsc.start_time, dsc.end_time, dsc.slot_duration_minutes,
+               dsc.break_start_time, dsc.break_duration_minutes, dsc.working_days, dsc.created_at,
+               d.department_name, d.department_code
+        FROM department_schedule_config dsc
+        JOIN departments d ON d.id = dsc.department_id
+        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1)
+        ORDER BY dsc.id DESC
+        LIMIT $2 OFFSET $3
+      `,
+      queryValues: [q, limit, offset],
+      countSql: `
+        SELECT COUNT(*)::int AS total
+        FROM department_schedule_config dsc
+        JOIN departments d ON d.id = dsc.department_id
+        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1)
+      `,
+      countValues: [q],
+    });
+
+    return res.json(response);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post("/department-schedule-config", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const departmentId = asPositiveInt(req.body.department_id, 0);
+    const startTime = normalizeTimeValue(req.body.start_time);
+    const endTime = normalizeTimeValue(req.body.end_time);
+    const slotDurationMinutes = asPositiveInt(req.body.slot_duration_minutes, 0);
+    const rawBreakDuration =
+      req.body.break_duration_minutes === undefined || req.body.break_duration_minutes === null
+        ? 0
+        : asNonNegativeInt(req.body.break_duration_minutes, -1);
+    const breakDurationMinutes = rawBreakDuration < 0 ? -1 : rawBreakDuration;
+    const breakStartTime = breakDurationMinutes > 0 ? normalizeTimeValue(req.body.break_start_time) : "";
+    const workingDays = normalizeWorkingDays(req.body.working_days);
+
+    if (!departmentId || !startTime || !endTime || !slotDurationMinutes || breakDurationMinutes < 0 || !workingDays) {
+      return res.status(400).json({
+        message:
+          "Department, start time, end time, slot duration, break duration and working days are required",
+      });
+    }
+
+    const scheduleValidationMessage = validateDepartmentScheduleWindow({
+      startTime,
+      endTime,
+      breakStartTime,
+      breakDurationMinutes,
+      slotDurationMinutes,
+    });
+    if (scheduleValidationMessage) {
+      return res.status(400).json({ message: scheduleValidationMessage });
+    }
+
+    const department = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    if (department.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+
+    const duplicate = await pool.query(
+      `SELECT id
+       FROM department_schedule_config
+       WHERE department_id = $1
+       LIMIT 1`,
+      [departmentId]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ message: "Working hours already configured for this department" });
+    }
+
+    const inserted = await pool.query(
+      `INSERT INTO department_schedule_config
+      (department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *`,
+      [
+        departmentId,
+        startTime,
+        endTime,
+        slotDurationMinutes,
+        breakDurationMinutes > 0 ? breakStartTime : null,
+        breakDurationMinutes,
+        workingDays,
+      ]
+    );
+
+    await logActivity(
+      req.user.userId,
+      "Department Schedule Added",
+      `department_id=${departmentId}, working_days=${workingDays}`
+    );
+    return res.status(201).json({ message: "Department schedule saved successfully", data: inserted.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Working hours already configured for this department" });
+    }
+    if (err.code === "23503") {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+    return next(err);
+  }
+});
+
+router.put("/department-schedule-config/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const configId = asPositiveInt(req.params.id, 0);
+    if (!configId) {
+      return res.status(400).json({ message: "Invalid department schedule id" });
+    }
+
+    const existingResult = await pool.query(
+      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days
+       FROM department_schedule_config
+       WHERE id = $1`,
+      [configId]
+    );
+    if (existingResult.rowCount === 0) {
+      return res.status(404).json({ message: "Department schedule not found" });
+    }
+    const current = existingResult.rows[0];
+
+    const departmentId =
+      req.body.department_id === undefined ? Number(current.department_id) : asPositiveInt(req.body.department_id, 0);
+    const startTime =
+      req.body.start_time === undefined ? normalizeTimeValue(current.start_time) : normalizeTimeValue(req.body.start_time);
+    const endTime =
+      req.body.end_time === undefined ? normalizeTimeValue(current.end_time) : normalizeTimeValue(req.body.end_time);
+    const slotDurationMinutes =
+      req.body.slot_duration_minutes === undefined
+        ? asPositiveInt(current.slot_duration_minutes, 0)
+        : asPositiveInt(req.body.slot_duration_minutes, 0);
+    const breakDurationMinutes =
+      req.body.break_duration_minutes === undefined
+        ? asNonNegativeInt(current.break_duration_minutes, 0)
+        : asNonNegativeInt(req.body.break_duration_minutes, -1);
+    const breakStartTime =
+      req.body.break_start_time === undefined
+        ? normalizeTimeValue(current.break_start_time)
+        : normalizeTimeValue(req.body.break_start_time);
+    const workingDays =
+      req.body.working_days === undefined ? normalizeWorkingDays(current.working_days) : normalizeWorkingDays(req.body.working_days);
+
+    if (!departmentId || !startTime || !endTime || !slotDurationMinutes || breakDurationMinutes < 0 || !workingDays) {
+      return res.status(400).json({
+        message:
+          "Department, start time, end time, slot duration, break duration and working days are required",
+      });
+    }
+
+    const effectiveBreakStartTime = breakDurationMinutes > 0 ? breakStartTime : "";
+    const scheduleValidationMessage = validateDepartmentScheduleWindow({
+      startTime,
+      endTime,
+      breakStartTime: effectiveBreakStartTime,
+      breakDurationMinutes,
+      slotDurationMinutes,
+    });
+    if (scheduleValidationMessage) {
+      return res.status(400).json({ message: scheduleValidationMessage });
+    }
+
+    const department = await pool.query(`SELECT id FROM departments WHERE id = $1`, [departmentId]);
+    if (department.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+
+    const duplicate = await pool.query(
+      `SELECT id
+       FROM department_schedule_config
+       WHERE id <> $1
+         AND department_id = $2
+       LIMIT 1`,
+      [configId, departmentId]
+    );
+    if (duplicate.rowCount > 0) {
+      return res.status(409).json({ message: "Working hours already configured for this department" });
+    }
+
+    const updated = await pool.query(
+      `UPDATE department_schedule_config
+       SET department_id = $1,
+           start_time = $2,
+           end_time = $3,
+           slot_duration_minutes = $4,
+           break_start_time = $5,
+           break_duration_minutes = $6,
+           working_days = $7
+       WHERE id = $8
+       RETURNING *`,
+      [
+        departmentId,
+        startTime,
+        endTime,
+        slotDurationMinutes,
+        breakDurationMinutes > 0 ? effectiveBreakStartTime : null,
+        breakDurationMinutes,
+        workingDays,
+        configId,
+      ]
+    );
+
+    await logActivity(
+      req.user.userId,
+      "Department Schedule Updated",
+      `department_id=${departmentId}, id=${configId}`
+    );
+    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") {
+      return res.status(409).json({ message: "Working hours already configured for this department" });
+    }
+    if (isForeignKeyViolation(err)) {
+      return res.status(400).json({ message: "Invalid department selected" });
+    }
+    return next(err);
+  }
+});
+
+router.delete("/department-schedule-config/:id", authRequired, async (req, res, next) => {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const configId = asPositiveInt(req.params.id, 0);
+    if (!configId) {
+      return res.status(400).json({ message: "Invalid department schedule id" });
+    }
+
+    const existing = await pool.query(
+      `SELECT id, department_id
+       FROM department_schedule_config
+       WHERE id = $1`,
+      [configId]
+    );
+    if (existing.rowCount === 0) {
+      return res.status(404).json({ message: "Department schedule not found" });
+    }
+
+    await pool.query(`DELETE FROM department_schedule_config WHERE id = $1`, [configId]);
+    await logActivity(
+      req.user.userId,
+      "Department Schedule Deleted",
+      `department_id=${existing.rows[0].department_id}, id=${configId}`
+    );
+    return res.json({ message: "Deleted successfully" });
+  } catch (err) {
     return next(err);
   }
 });
@@ -966,6 +1313,68 @@ router.delete("/faculty/:id", authRequired, async (req, res, next) => {
   }
 });
 
+function parseOptionalNonNegativeInt(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  return asNonNegativeInt(value, -1);
+}
+
+function buildSubjectHourConfig({ normalizedSubjectType, totalHours, rawTheoryHours, rawPracticalHours }) {
+  if (!Number.isInteger(totalHours) || totalHours <= 0) {
+    return { error: "Total semester hours must be a positive integer" };
+  }
+
+  if (normalizedSubjectType === "Theory") {
+    return {
+      theoryHours: totalHours,
+      practicalHours: 0,
+      totalHours,
+      requiresLab: false,
+    };
+  }
+
+  if (normalizedSubjectType === "Practical") {
+    return {
+      theoryHours: 0,
+      practicalHours: totalHours,
+      totalHours,
+      requiresLab: true,
+    };
+  }
+
+  if (rawTheoryHours === null || rawPracticalHours === null) {
+    return { error: "Theory hours and practical hours are required for Theory + Practical subjects" };
+  }
+
+  if (rawTheoryHours < 0 || rawPracticalHours < 0) {
+    return { error: "Theory and practical hours must be zero or positive integers" };
+  }
+
+  if (rawTheoryHours + rawPracticalHours !== totalHours) {
+    return { error: "Total semester hours must equal theory hours + practical hours" };
+  }
+
+  return {
+    theoryHours: rawTheoryHours,
+    practicalHours: rawPracticalHours,
+    totalHours,
+    requiresLab: rawPracticalHours > 0,
+  };
+}
+
+async function ensureLabAvailabilityForPractical(departmentId) {
+  const labAvailability = await pool.query(
+    `SELECT
+       EXISTS(SELECT 1 FROM classrooms WHERE room_type = 'Lab') AS has_lab_room,
+       EXISTS(SELECT 1 FROM laboratories WHERE department_id = $1) AS has_department_lab`,
+    [departmentId]
+  );
+
+  const availability = labAvailability.rows[0] || {};
+  return Boolean(availability.has_lab_room || availability.has_department_lab);
+}
+
 router.get("/subjects", authRequired, async (req, res, next) => {
   try {
     const { page, limit, offset } = parsePagination(req.query);
@@ -975,7 +1384,30 @@ router.get("/subjects", authRequired, async (req, res, next) => {
       page,
       limit,
       querySql: `
-        SELECT s.id, s.subject_name, s.subject_code, s.subject_type, s.department_id, s.branch_id, s.semester_id, s.created_at,
+        SELECT s.id, s.subject_name, s.subject_code,
+               CASE WHEN s.subject_type = 'Both' THEN 'Theory + Practical' ELSE s.subject_type END AS subject_type,
+               s.department_id, s.branch_id, s.semester_id,
+               COALESCE(NULLIF(s.total_hours, 0), s.total_hours_semester, 0) AS total_hours,
+               COALESCE(NULLIF(s.theory_hours, 0), s.theory_hours_per_week, 0) AS theory_hours,
+               COALESCE(NULLIF(s.practical_hours, 0), s.practical_hours_per_week, 0) AS practical_hours,
+               ROUND(
+                 (
+                   COALESCE(NULLIF(s.total_hours, 0), s.total_hours_semester, 0)::numeric
+                   / GREATEST(
+                     1,
+                     COALESCE(CEIL(((sd.end_date - sd.start_date + 1)::numeric) / 7.0), 16)
+                   )
+                 ),
+                 2
+               ) AS weekly_hours,
+               CASE
+                 WHEN s.requires_lab THEN TRUE
+                 WHEN s.subject_type = 'Practical' THEN TRUE
+                 WHEN (CASE WHEN s.subject_type = 'Both' THEN 'Theory + Practical' ELSE s.subject_type END) = 'Theory + Practical'
+                      AND COALESCE(NULLIF(s.practical_hours, 0), s.practical_hours_per_week, 0) > 0 THEN TRUE
+                 ELSE FALSE
+               END AS requires_lab,
+               s.created_at,
                d.department_name,
                b.branch_name,
                sem.semester_number, sem.academic_year
@@ -983,6 +1415,7 @@ router.get("/subjects", authRequired, async (req, res, next) => {
         JOIN departments d ON d.id = s.department_id
         JOIN branches b ON b.id = s.branch_id
         JOIN semesters sem ON sem.id = s.semester_id
+        LEFT JOIN semester_durations sd ON sd.semester_id = s.semester_id
         WHERE ($1 = '' OR s.subject_name ILIKE $1 OR s.subject_code ILIKE $1 OR d.department_name ILIKE $1 OR b.branch_name ILIKE $1)
         ORDER BY s.id DESC
         LIMIT $2 OFFSET $3
@@ -1014,37 +1447,25 @@ router.post("/subjects", authRequired, async (req, res, next) => {
     const departmentId = asPositiveInt(req.body.department_id, 0);
     const branchId = asPositiveInt(req.body.branch_id, 0);
     const semesterId = asPositiveInt(req.body.semester_id, 0);
-    const subjectType = String(req.body.subject_type || "").trim();
-    const hasTheoryHours = req.body.theory_hours_per_week !== undefined && req.body.theory_hours_per_week !== null;
-    const hasPracticalHours = req.body.practical_hours_per_week !== undefined && req.body.practical_hours_per_week !== null;
-    const hasTotalHours = req.body.total_hours_semester !== undefined && req.body.total_hours_semester !== null;
+    const normalizedSubjectType = normalizeSubjectType(req.body.subject_type);
+    const totalHours = asNonNegativeInt(req.body.total_hours ?? req.body.total_hours_semester, -1);
+    const rawTheoryHours = parseOptionalNonNegativeInt(req.body.theory_hours ?? req.body.theory_hours_per_week);
+    const rawPracticalHours = parseOptionalNonNegativeInt(req.body.practical_hours ?? req.body.practical_hours_per_week);
 
-    if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !subjectType) {
+    if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !normalizedSubjectType) {
       return res.status(400).json({
         message: "Subject name, code, department, branch, semester and type are required",
       });
     }
 
-    if (!["Theory", "Practical", "Both"].includes(subjectType)) {
-      return res.status(400).json({ message: "Subject type must be Theory, Practical or Both" });
-    }
-
-    const theoryHours = hasTheoryHours
-      ? asNonNegativeInt(req.body.theory_hours_per_week, -1)
-      : subjectType === "Practical"
-        ? 0
-        : 3;
-    const practicalHours = hasPracticalHours
-      ? asNonNegativeInt(req.body.practical_hours_per_week, -1)
-      : subjectType === "Theory"
-        ? 0
-        : 2;
-    const totalHours = hasTotalHours
-      ? asNonNegativeInt(req.body.total_hours_semester, -1)
-      : theoryHours + practicalHours;
-
-    if (theoryHours < 0 || practicalHours < 0 || totalHours < 0) {
-      return res.status(400).json({ message: "Hour values must be zero or positive integers" });
+    const hourConfig = buildSubjectHourConfig({
+      normalizedSubjectType,
+      totalHours,
+      rawTheoryHours,
+      rawPracticalHours,
+    });
+    if (hourConfig.error) {
+      return res.status(400).json({ message: hourConfig.error });
     }
 
     const branch = await pool.query(
@@ -1067,6 +1488,15 @@ router.post("/subjects", authRequired, async (req, res, next) => {
       return res.status(400).json({ message: "Selected semester does not belong to selected branch" });
     }
 
+    if (hourConfig.requiresLab) {
+      const hasLabCapacity = await ensureLabAvailabilityForPractical(departmentId);
+      if (!hasLabCapacity) {
+        return res.status(400).json({
+          message: "Practical subjects require at least one configured lab room or laboratory",
+        });
+      }
+    }
+
     const duplicateCode = await pool.query(
       `SELECT id
        FROM subjects
@@ -1082,8 +1512,9 @@ router.post("/subjects", authRequired, async (req, res, next) => {
     const inserted = await pool.query(
       `INSERT INTO subjects
       (subject_name, subject_code, department_id, branch_id, semester_id, subject_type,
+       total_hours, theory_hours, practical_hours, requires_lab,
        theory_hours_per_week, practical_hours_per_week, total_hours_semester)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
         subjectName,
@@ -1091,10 +1522,14 @@ router.post("/subjects", authRequired, async (req, res, next) => {
         departmentId,
         branchId,
         semesterId,
-        subjectType,
-        theoryHours,
-        practicalHours,
-        totalHours,
+        normalizedSubjectType,
+        hourConfig.totalHours,
+        hourConfig.theoryHours,
+        hourConfig.practicalHours,
+        hourConfig.requiresLab,
+        hourConfig.theoryHours,
+        hourConfig.practicalHours,
+        hourConfig.totalHours,
       ]
     );
 
@@ -1121,28 +1556,23 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
     const departmentId = asPositiveInt(req.body.department_id, 0);
     const branchId = asPositiveInt(req.body.branch_id, 0);
     const semesterId = asPositiveInt(req.body.semester_id, 0);
-    const subjectType = String(req.body.subject_type || "").trim();
-    const hasTheoryHours = req.body.theory_hours_per_week !== undefined && req.body.theory_hours_per_week !== null;
-    const hasPracticalHours =
-      req.body.practical_hours_per_week !== undefined && req.body.practical_hours_per_week !== null;
-    const hasTotalHours = req.body.total_hours_semester !== undefined && req.body.total_hours_semester !== null;
+    const normalizedSubjectType = normalizeSubjectType(req.body.subject_type);
+    const totalHours = asNonNegativeInt(req.body.total_hours ?? req.body.total_hours_semester, -1);
+    const rawTheoryHours = parseOptionalNonNegativeInt(req.body.theory_hours ?? req.body.theory_hours_per_week);
+    const rawPracticalHours = parseOptionalNonNegativeInt(req.body.practical_hours ?? req.body.practical_hours_per_week);
 
     if (!subjectId) {
       return res.status(400).json({ message: "Invalid subject id" });
     }
 
-    if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !subjectType) {
+    if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !normalizedSubjectType) {
       return res.status(400).json({
         message: "Subject name, code, department, branch, semester and type are required",
       });
     }
 
-    if (!isValidSubjectType(subjectType)) {
-      return res.status(400).json({ message: "Subject type must be Theory, Practical or Both" });
-    }
-
     const existing = await pool.query(
-      `SELECT id, theory_hours_per_week, practical_hours_per_week, total_hours_semester
+      `SELECT id
        FROM subjects
        WHERE id = $1`,
       [subjectId]
@@ -1151,19 +1581,14 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       return res.status(404).json({ message: "Subject not found" });
     }
 
-    const current = existing.rows[0];
-    const theoryHours = hasTheoryHours
-      ? asNonNegativeInt(req.body.theory_hours_per_week, -1)
-      : asNonNegativeInt(current.theory_hours_per_week, subjectType === "Practical" ? 0 : 3);
-    const practicalHours = hasPracticalHours
-      ? asNonNegativeInt(req.body.practical_hours_per_week, -1)
-      : asNonNegativeInt(current.practical_hours_per_week, subjectType === "Theory" ? 0 : 2);
-    const totalHours = hasTotalHours
-      ? asNonNegativeInt(req.body.total_hours_semester, -1)
-      : asNonNegativeInt(current.total_hours_semester, theoryHours + practicalHours);
-
-    if (theoryHours < 0 || practicalHours < 0 || totalHours < 0) {
-      return res.status(400).json({ message: "Hour values must be zero or positive integers" });
+    const hourConfig = buildSubjectHourConfig({
+      normalizedSubjectType,
+      totalHours,
+      rawTheoryHours,
+      rawPracticalHours,
+    });
+    if (hourConfig.error) {
+      return res.status(400).json({ message: hourConfig.error });
     }
 
     const branch = await pool.query(
@@ -1184,6 +1609,15 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
     );
     if (semester.rowCount === 0 || Number(semester.rows[0].branch_id) !== branchId) {
       return res.status(400).json({ message: "Selected semester does not belong to selected branch" });
+    }
+
+    if (hourConfig.requiresLab) {
+      const hasLabCapacity = await ensureLabAvailabilityForPractical(departmentId);
+      if (!hasLabCapacity) {
+        return res.status(400).json({
+          message: "Practical subjects require at least one configured lab room or laboratory",
+        });
+      }
     }
 
     const duplicateCode = await pool.query(
@@ -1207,10 +1641,14 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
            branch_id = $4,
            semester_id = $5,
            subject_type = $6,
-           theory_hours_per_week = $7,
-           practical_hours_per_week = $8,
-           total_hours_semester = $9
-       WHERE id = $10
+           total_hours = $7,
+           theory_hours = $8,
+           practical_hours = $9,
+           requires_lab = $10,
+           theory_hours_per_week = $11,
+           practical_hours_per_week = $12,
+           total_hours_semester = $13
+       WHERE id = $14
        RETURNING *`,
       [
         subjectName,
@@ -1218,10 +1656,14 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
         departmentId,
         branchId,
         semesterId,
-        subjectType,
-        theoryHours,
-        practicalHours,
-        totalHours,
+        normalizedSubjectType,
+        hourConfig.totalHours,
+        hourConfig.theoryHours,
+        hourConfig.practicalHours,
+        hourConfig.requiresLab,
+        hourConfig.theoryHours,
+        hourConfig.practicalHours,
+        hourConfig.totalHours,
         subjectId,
       ]
     );

@@ -9,21 +9,232 @@ const { logActivity } = require("../utils/activity");
 
 const router = express.Router();
 
-function getSessionDemands(subject) {
-  const theory = Number(subject.theory_hours_per_week || 0);
-  const practical = Number(subject.practical_hours_per_week || 0);
-  const type = subject.subject_type;
+const DEFAULT_SEMESTER_WEEKS = 16;
+
+function normalizeSubjectType(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "theory") return "Theory";
+  if (normalized === "practical") return "Practical";
+  if (normalized === "both" || normalized === "theory + practical" || normalized === "theory+practical") {
+    return "Theory + Practical";
+  }
+  return "Theory";
+}
+
+function asNonNegativeInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+  return fallback;
+}
+
+function parseDateToUtcValue(value) {
+  if (!value) return null;
+  const [yearRaw, monthRaw, dayRaw] = String(value).split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return null;
+  }
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day);
+}
+
+function calculateTotalWeeks(semesterDuration) {
+  if (!semesterDuration) {
+    return DEFAULT_SEMESTER_WEEKS;
+  }
+
+  const startUtc = parseDateToUtcValue(semesterDuration.start_date);
+  const endUtc = parseDateToUtcValue(semesterDuration.end_date);
+  if (startUtc === null || endUtc === null || endUtc < startUtc) {
+    return DEFAULT_SEMESTER_WEEKS;
+  }
+
+  const millisPerDay = 24 * 60 * 60 * 1000;
+  const totalDays = Math.floor((endUtc - startUtc) / millisPerDay) + 1;
+  return Math.max(1, Math.ceil(totalDays / 7));
+}
+
+function toTimeMinutes(value) {
+  const text = String(value || "").trim();
+  const match = /^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/.exec(text);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  return hours * 60 + minutes;
+}
+
+function minutesToSqlTime(minutes) {
+  const normalized = Math.max(0, Math.min(24 * 60 - 1, Number(minutes)));
+  const hours = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  return `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:00`;
+}
+
+function resolveWorkingDays(workingDays) {
+  if (String(workingDays || "").trim() === "Mon-Sat") {
+    return [1, 2, 3, 4, 5, 6];
+  }
+  return [1, 2, 3, 4, 5];
+}
+
+function computeWeeklyDemand(totalHours, totalWeeks) {
+  const safeTotalHours = asNonNegativeInteger(totalHours, 0);
+  const safeTotalWeeks = Math.max(1, asNonNegativeInteger(totalWeeks, DEFAULT_SEMESTER_WEEKS));
+  if (safeTotalHours === 0) return 0;
+
+  const base = Math.floor(safeTotalHours / safeTotalWeeks);
+  const remainder = safeTotalHours % safeTotalWeeks;
+  return base + (remainder > 0 ? 1 : 0);
+}
+
+function resolveSubjectHourBreakdown(subject) {
+  const type = normalizeSubjectType(subject.subject_type);
+  const totalHours = asNonNegativeInteger(subject.total_hours ?? subject.total_hours_semester, 0);
+  let theoryHours = asNonNegativeInteger(subject.theory_hours ?? subject.theory_hours_per_week, 0);
+  let practicalHours = asNonNegativeInteger(subject.practical_hours ?? subject.practical_hours_per_week, 0);
 
   if (type === "Theory") {
-    return [{ count: Math.max(1, theory), mode: "Theory" }];
+    theoryHours = totalHours > 0 ? totalHours : theoryHours;
+    practicalHours = 0;
+  } else if (type === "Practical") {
+    theoryHours = 0;
+    practicalHours = totalHours > 0 ? totalHours : practicalHours;
+  } else {
+    if (theoryHours === 0 && practicalHours === 0 && totalHours > 0) {
+      theoryHours = Math.ceil(totalHours / 2);
+      practicalHours = totalHours - theoryHours;
+    } else if (totalHours > 0 && theoryHours + practicalHours !== totalHours) {
+      const recomputedTheory = Math.max(0, totalHours - practicalHours);
+      if (theoryHours === 0 || recomputedTheory + practicalHours === totalHours) {
+        theoryHours = recomputedTheory;
+      } else {
+        practicalHours = Math.max(0, totalHours - theoryHours);
+      }
+    }
   }
-  if (type === "Practical") {
-    return [{ count: Math.max(1, practical), mode: "Practical" }];
+
+  const resolvedTotal = totalHours > 0 ? totalHours : theoryHours + practicalHours;
+  return {
+    type,
+    totalHours: resolvedTotal,
+    theoryHours,
+    practicalHours,
+  };
+}
+
+function getSessionDemands(subject, totalWeeks) {
+  const subjectHours = resolveSubjectHourBreakdown(subject);
+
+  if (subjectHours.type === "Theory") {
+    return [{ count: computeWeeklyDemand(subjectHours.totalHours, totalWeeks), mode: "Theory" }];
   }
+
+  if (subjectHours.type === "Practical") {
+    return [{ count: computeWeeklyDemand(subjectHours.totalHours, totalWeeks), mode: "Practical" }];
+  }
+
   return [
-    { count: Math.max(1, theory), mode: "Theory" },
-    { count: Math.max(1, practical), mode: "Practical" },
-  ];
+    { count: computeWeeklyDemand(subjectHours.theoryHours, totalWeeks), mode: "Theory" },
+    { count: computeWeeklyDemand(subjectHours.practicalHours, totalWeeks), mode: "Practical" },
+  ].filter((item) => item.count > 0);
+}
+
+function buildDepartmentSlotTemplates(scheduleConfig) {
+  const startMinutes = toTimeMinutes(scheduleConfig.start_time);
+  const endMinutes = toTimeMinutes(scheduleConfig.end_time);
+  const slotDurationMinutes = asNonNegativeInteger(scheduleConfig.slot_duration_minutes, 0);
+  const breakDurationMinutes = asNonNegativeInteger(scheduleConfig.break_duration_minutes, 0);
+  const breakStartMinutes = breakDurationMinutes > 0 ? toTimeMinutes(scheduleConfig.break_start_time) : null;
+
+  if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+    throw new Error("Department schedule has invalid start/end time");
+  }
+  if (slotDurationMinutes <= 0) {
+    throw new Error("Department schedule has invalid slot duration");
+  }
+  if (breakDurationMinutes > 0 && breakStartMinutes === null) {
+    throw new Error("Department schedule has invalid break start time");
+  }
+  if (
+    breakDurationMinutes > 0 &&
+    (breakStartMinutes < startMinutes || breakStartMinutes + breakDurationMinutes > endMinutes)
+  ) {
+    throw new Error("Department break must be within configured working hours");
+  }
+
+  const templates = [];
+  let cursor = startMinutes;
+  let slotNumber = 1;
+  let breakApplied = false;
+
+  while (cursor + slotDurationMinutes <= endMinutes) {
+    if (breakDurationMinutes > 0 && !breakApplied && breakStartMinutes !== null) {
+      if (cursor >= breakStartMinutes) {
+        cursor += breakDurationMinutes;
+        breakApplied = true;
+        continue;
+      }
+
+      if (cursor < breakStartMinutes && cursor + slotDurationMinutes > breakStartMinutes) {
+        cursor = breakStartMinutes + breakDurationMinutes;
+        breakApplied = true;
+        continue;
+      }
+    }
+
+    const slotEnd = cursor + slotDurationMinutes;
+    if (slotEnd > endMinutes) {
+      break;
+    }
+
+    templates.push({
+      slot_number: slotNumber,
+      start_time: minutesToSqlTime(cursor),
+      end_time: minutesToSqlTime(slotEnd),
+    });
+    slotNumber += 1;
+    cursor = slotEnd;
+  }
+
+  if (templates.length === 0) {
+    throw new Error("Department schedule did not produce any valid slots");
+  }
+
+  return templates;
+}
+
+async function ensureDepartmentTimeSlots(client, departmentId, scheduleConfig) {
+  const slotTemplates = buildDepartmentSlotTemplates(scheduleConfig);
+  const workingDays = resolveWorkingDays(scheduleConfig.working_days);
+  const createdSlots = [];
+
+  for (const day of workingDays) {
+    for (const template of slotTemplates) {
+      const slotResult = await client.query(
+        `INSERT INTO time_slots (department_id, day_of_week, start_time, end_time, slot_number)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (department_id, day_of_week, slot_number)
+         DO UPDATE SET
+           start_time = EXCLUDED.start_time,
+           end_time = EXCLUDED.end_time
+         RETURNING id, department_id, day_of_week, start_time, end_time, slot_number`,
+        [departmentId, day, template.start_time, template.end_time, template.slot_number]
+      );
+      createdSlots.push(slotResult.rows[0]);
+    }
+  }
+
+  return createdSlots.sort((a, b) =>
+    Number(a.day_of_week) === Number(b.day_of_week)
+      ? Number(a.slot_number) - Number(b.slot_number)
+      : Number(a.day_of_week) - Number(b.day_of_week)
+  );
 }
 
 function normalizeFileToken(value, fallback = "timetable") {
@@ -135,6 +346,42 @@ async function generateTimetableHandler(req, res, next) {
 
     await client.query("BEGIN");
 
+    const semesterMetaResult = await client.query(
+      `SELECT sem.id, sem.branch_id, b.department_id
+       FROM semesters sem
+       JOIN branches b ON b.id = sem.branch_id
+       WHERE sem.id = $1`,
+      [semesterId]
+    );
+    if (semesterMetaResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Invalid semester selected" });
+    }
+    const departmentId = Number(semesterMetaResult.rows[0].department_id);
+
+    const departmentScheduleResult = await client.query(
+      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days
+       FROM department_schedule_config
+       WHERE department_id = $1
+       LIMIT 1`,
+      [departmentId]
+    );
+    if (departmentScheduleResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "No department working hours configured. Configure Department Working Hours before generating.",
+      });
+    }
+
+    const semesterDurationResult = await client.query(
+      `SELECT start_date, end_date
+       FROM semester_durations
+       WHERE semester_id = $1
+       LIMIT 1`,
+      [semesterId]
+    );
+    const totalWeeks = calculateTotalWeeks(semesterDurationResult.rows[0]);
+
     const sectionsResult = await client.query(
       `SELECT id, section_name, student_strength
        FROM sections
@@ -143,7 +390,7 @@ async function generateTimetableHandler(req, res, next) {
     );
 
     const subjectsResult = await client.query(
-      `SELECT id, subject_name, subject_type, theory_hours_per_week, practical_hours_per_week
+      `SELECT id, subject_name, subject_type, total_hours, theory_hours, practical_hours, requires_lab
        FROM subjects
        WHERE semester_id = $1`,
       [semesterId]
@@ -153,13 +400,10 @@ async function generateTimetableHandler(req, res, next) {
       `SELECT fs.subject_id, fs.faculty_id, f.full_name, f.max_workload_per_week
        FROM faculty_subjects fs
        JOIN faculty f ON f.id = fs.faculty_id
-       WHERE fs.faculty_id IS NOT NULL`
-    );
-
-    const slotsResult = await client.query(
-      `SELECT id, day_of_week, slot_number
-       FROM time_slots
-       ORDER BY day_of_week, slot_number`
+       JOIN subjects s ON s.id = fs.subject_id
+       WHERE fs.faculty_id IS NOT NULL
+         AND s.semester_id = $1`,
+      [semesterId]
     );
 
     const roomsResult = await client.query(
@@ -168,7 +412,9 @@ async function generateTimetableHandler(req, res, next) {
     );
     const labsResult = await client.query(
       `SELECT id, lab_name, capacity
-       FROM laboratories`
+       FROM laboratories
+       WHERE department_id = $1`,
+      [departmentId]
     );
 
     if (sectionsResult.rowCount === 0) {
@@ -181,13 +427,6 @@ async function generateTimetableHandler(req, res, next) {
       return res.status(400).json({ message: "No subjects found for this semester" });
     }
 
-    if (slotsResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        message: "No time slots configured. Add time slots from Academic Data > Time Slots.",
-      });
-    }
-
     if (roomsResult.rowCount === 0) {
       await client.query("ROLLBACK");
       if (labsResult.rowCount > 0) {
@@ -198,6 +437,39 @@ async function generateTimetableHandler(req, res, next) {
       return res.status(400).json({ message: "No classrooms configured" });
     }
 
+    let slots = [];
+    try {
+      slots = await ensureDepartmentTimeSlots(client, departmentId, departmentScheduleResult.rows[0]);
+    } catch (scheduleError) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: scheduleError.message || "Invalid department schedule configuration" });
+    }
+    if (!slots.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "No valid slots generated from department schedule" });
+    }
+
+    const lectureRooms = roomsResult.rows.filter((room) => room.room_type === "Lecture");
+    const labRooms = roomsResult.rows.filter((room) => room.room_type === "Lab");
+
+    if (!lectureRooms.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "No lecture classrooms configured" });
+    }
+
+    const hasPracticalSubjects = subjectsResult.rows.some((subject) =>
+      getSessionDemands(subject, totalWeeks).some((demand) => demand.mode === "Practical" && demand.count > 0)
+    );
+    if (hasPracticalSubjects && !labRooms.length) {
+      await client.query("ROLLBACK");
+      if (labsResult.rowCount > 0) {
+        return res.status(400).json({
+          message: "No classroom with room_type 'Lab' is available for practical sessions.",
+        });
+      }
+      return res.status(400).json({ message: "Practical subjects require lab rooms, but none are configured" });
+    }
+
     const subjectFacultyMap = new Map();
     const facultyWorkloadMap = new Map();
 
@@ -205,7 +477,10 @@ async function generateTimetableHandler(req, res, next) {
       if (!subjectFacultyMap.has(row.subject_id)) {
         subjectFacultyMap.set(row.subject_id, []);
       }
-      subjectFacultyMap.get(row.subject_id).push(row.faculty_id);
+      const currentFaculty = subjectFacultyMap.get(row.subject_id);
+      if (!currentFaculty.includes(row.faculty_id)) {
+        currentFaculty.push(row.faculty_id);
+      }
       if (!facultyWorkloadMap.has(row.faculty_id)) {
         facultyWorkloadMap.set(row.faculty_id, {
           max: Number(row.max_workload_per_week || 0),
@@ -230,11 +505,12 @@ async function generateTimetableHandler(req, res, next) {
     const conflicts = [];
 
     function roomCandidatesFor(mode, studentStrength) {
-      return roomsResult.rows.filter((room) => {
+      const sourceRooms = mode === "Practical" ? labRooms : lectureRooms;
+      return sourceRooms.filter((room) => {
         if (mode === "Practical") {
-          return room.room_type === "Lab" && room.capacity >= studentStrength;
+          return room.capacity >= studentStrength;
         }
-        return room.room_type === "Lecture" && room.capacity >= studentStrength;
+        return room.capacity >= studentStrength;
       });
     }
 
@@ -249,7 +525,7 @@ async function generateTimetableHandler(req, res, next) {
         return { success: false, reason: "No suitable room available" };
       }
 
-      for (const slot of slotsResult.rows) {
+      for (const slot of slots) {
         const sectionSlotKey = `${section.id}-${slot.id}`;
         if (sectionSlotUsed.has(sectionSlotKey)) {
           continue;
@@ -286,6 +562,7 @@ async function generateTimetableHandler(req, res, next) {
                 faculty_id: facultyId,
                 classroom_id: room.id,
                 timeslot_id: slot.id,
+                session_mode: mode,
               },
             };
           }
@@ -297,7 +574,7 @@ async function generateTimetableHandler(req, res, next) {
 
     for (const section of sectionsResult.rows) {
       for (const subject of subjectsResult.rows) {
-        const demands = getSessionDemands(subject);
+        const demands = getSessionDemands(subject, totalWeeks);
         for (const demand of demands) {
           for (let i = 0; i < demand.count; i += 1) {
             const assigned = tryAssign(section, subject, demand.mode);
@@ -310,6 +587,7 @@ async function generateTimetableHandler(req, res, next) {
                 subject_id: subject.id,
                 subject_name: subject.subject_name,
                 mode: demand.mode,
+                requested_per_week: demand.count,
                 reason: assigned.reason,
               });
             }
@@ -321,8 +599,8 @@ async function generateTimetableHandler(req, res, next) {
     for (const entry of entries) {
       await client.query(
         `INSERT INTO timetable_entries
-         (timetable_id, section_id, subject_id, faculty_id, classroom_id, timeslot_id)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+         (timetable_id, section_id, subject_id, faculty_id, classroom_id, timeslot_id, session_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           entry.timetable_id,
           entry.section_id,
@@ -330,12 +608,13 @@ async function generateTimetableHandler(req, res, next) {
           entry.faculty_id,
           entry.classroom_id,
           entry.timeslot_id,
+          entry.session_mode,
         ]
       );
     }
 
     const exportRowsResult = await client.query(
-      `SELECT sec.section_name, sub.subject_name, f.full_name AS faculty_name, c.room_number,
+      `SELECT sec.section_name, sub.subject_name, te.session_mode, f.full_name AS faculty_name, c.room_number,
               ts.day_of_week, ts.slot_number
        FROM timetable_entries te
        JOIN sections sec ON sec.id = te.section_id
@@ -373,7 +652,12 @@ async function generateTimetableHandler(req, res, next) {
 
     return res.status(201).json({
       message: "Timetable generated",
-      timetable: timetableResult.rows[0],
+      timetable: {
+        ...timetableResult.rows[0],
+        total_weeks: totalWeeks,
+        department_id: departmentId,
+      },
+      total_weeks: totalWeeks,
       assigned_entries: entries.length,
       conflicts_count: conflicts.length,
       conflicts,
@@ -450,7 +734,7 @@ async function getTimetableHistoryHandler(req, res, next) {
 
 async function fetchTimetableDetails(timetableId) {
   const timetableResult = await pool.query(
-    `SELECT t.*, s.semester_number, s.academic_year, b.branch_name, d.department_name
+    `SELECT t.*, s.semester_number, s.academic_year, b.branch_name, d.id AS department_id, d.department_name
      FROM timetables t
      JOIN semesters s ON s.id = t.semester_id
      JOIN branches b ON b.id = s.branch_id
@@ -463,9 +747,13 @@ async function fetchTimetableDetails(timetableId) {
     return null;
   }
 
-  const [entriesResult, timeslotsResult] = await Promise.all([
+  const timetable = timetableResult.rows[0];
+
+  const [entriesResult, departmentTimeslotsResult] = await Promise.all([
     pool.query(
-      `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code, sub.subject_type,
+      `SELECT te.id, te.section_id, sec.section_name, te.subject_id, sub.subject_name, sub.subject_code,
+              CASE WHEN sub.subject_type = 'Both' THEN 'Theory + Practical' ELSE sub.subject_type END AS subject_type,
+              te.session_mode,
               te.faculty_id, f.full_name AS faculty_name, te.classroom_id, c.room_number,
               ts.id AS timeslot_id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number
        FROM timetable_entries te
@@ -481,15 +769,32 @@ async function fetchTimetableDetails(timetableId) {
     pool.query(
       `SELECT id, day_of_week, start_time, end_time, slot_number
        FROM time_slots
-       WHERE day_of_week BETWEEN 1 AND 5
-       ORDER BY day_of_week, slot_number`
+       WHERE department_id = $1
+       ORDER BY day_of_week, slot_number`,
+      [timetable.department_id]
     ),
   ]);
 
+  let timeSlots = departmentTimeslotsResult.rows;
+  if (timeSlots.length === 0) {
+    const fallbackTimeslotsResult = await pool.query(
+      `SELECT ts.id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number
+       FROM time_slots ts
+       WHERE ts.id IN (
+         SELECT DISTINCT te.timeslot_id
+         FROM timetable_entries te
+         WHERE te.timetable_id = $1
+       )
+       ORDER BY ts.day_of_week, ts.slot_number`,
+      [timetableId]
+    );
+    timeSlots = fallbackTimeslotsResult.rows;
+  }
+
   return {
-    timetable: timetableResult.rows[0],
+    timetable,
     entries: entriesResult.rows,
-    time_slots: timeslotsResult.rows,
+    time_slots: timeSlots,
   };
 }
 
@@ -659,21 +964,21 @@ router.get("/reports/conflicts", authRequired, async (req, res, next) => {
   try {
     const [facultyConflict, roomConflict, sectionConflict] = await Promise.all([
       pool.query(
-        `SELECT faculty_id, timeslot_id, COUNT(*)::int AS conflict_count
+        `SELECT timetable_id, faculty_id, timeslot_id, COUNT(*)::int AS conflict_count
          FROM timetable_entries
-         GROUP BY faculty_id, timeslot_id
+         GROUP BY timetable_id, faculty_id, timeslot_id
          HAVING COUNT(*) > 1`
       ),
       pool.query(
-        `SELECT classroom_id, timeslot_id, COUNT(*)::int AS conflict_count
+        `SELECT timetable_id, classroom_id, timeslot_id, COUNT(*)::int AS conflict_count
          FROM timetable_entries
-         GROUP BY classroom_id, timeslot_id
+         GROUP BY timetable_id, classroom_id, timeslot_id
          HAVING COUNT(*) > 1`
       ),
       pool.query(
-        `SELECT section_id, timeslot_id, COUNT(*)::int AS conflict_count
+        `SELECT timetable_id, section_id, timeslot_id, COUNT(*)::int AS conflict_count
          FROM timetable_entries
-         GROUP BY section_id, timeslot_id
+         GROUP BY timetable_id, section_id, timeslot_id
          HAVING COUNT(*) > 1`
       ),
     ]);
