@@ -15,6 +15,7 @@ router.get("/", authRequired, async (req, res, next) => {
 
     const [
       departments,
+      departmentScheduleConfigs,
       branches,
       sections,
       facultyCount,
@@ -29,6 +30,7 @@ router.get("/", authRequired, async (req, res, next) => {
       roomUtilizationResult,
     ] = await Promise.all([
       getCount("departments"),
+      getCount("department_schedule_config"),
       getCount("branches"),
       getCount("sections"),
       pool.query(
@@ -73,6 +75,7 @@ router.get("/", authRequired, async (req, res, next) => {
     return res.json({
       totals: {
         departments,
+        department_schedule_config: departmentScheduleConfigs,
         branches,
         sections,
         faculty: facultyCount,

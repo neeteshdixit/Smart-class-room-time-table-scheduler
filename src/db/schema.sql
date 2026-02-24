@@ -139,7 +139,11 @@ CREATE TABLE IF NOT EXISTS subjects (
     department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
     branch_id INTEGER REFERENCES branches(id) ON DELETE RESTRICT,
     semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
-    subject_type VARCHAR(20) NOT NULL CHECK (subject_type IN ('Theory', 'Practical', 'Both')),
+    subject_type VARCHAR(30) NOT NULL CHECK (subject_type IN ('Theory', 'Practical', 'Theory + Practical', 'Both')),
+    total_hours INTEGER NOT NULL DEFAULT 0 CHECK (total_hours >= 0),
+    theory_hours INTEGER NOT NULL DEFAULT 0 CHECK (theory_hours >= 0),
+    practical_hours INTEGER NOT NULL DEFAULT 0 CHECK (practical_hours >= 0),
+    requires_lab BOOLEAN NOT NULL DEFAULT FALSE,
     theory_hours_per_week INTEGER NOT NULL DEFAULT 0 CHECK (theory_hours_per_week >= 0),
     practical_hours_per_week INTEGER NOT NULL DEFAULT 0 CHECK (practical_hours_per_week >= 0),
     total_hours_semester INTEGER NOT NULL DEFAULT 0 CHECK (total_hours_semester >= 0),
@@ -236,6 +240,104 @@ BEGIN
     END IF;
 END $$;
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'subjects'
+          AND column_name = 'total_hours'
+    ) THEN
+        ALTER TABLE subjects
+        ADD COLUMN total_hours INTEGER NOT NULL DEFAULT 0 CHECK (total_hours >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'subjects'
+          AND column_name = 'theory_hours'
+    ) THEN
+        ALTER TABLE subjects
+        ADD COLUMN theory_hours INTEGER NOT NULL DEFAULT 0 CHECK (theory_hours >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'subjects'
+          AND column_name = 'practical_hours'
+    ) THEN
+        ALTER TABLE subjects
+        ADD COLUMN practical_hours INTEGER NOT NULL DEFAULT 0 CHECK (practical_hours >= 0);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'subjects'
+          AND column_name = 'requires_lab'
+    ) THEN
+        ALTER TABLE subjects
+        ADD COLUMN requires_lab BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
+END $$;
+
+UPDATE subjects
+SET subject_type = 'Theory + Practical'
+WHERE subject_type = 'Both';
+
+UPDATE subjects
+SET theory_hours = CASE
+    WHEN theory_hours > 0 THEN theory_hours
+    WHEN theory_hours_per_week > 0 THEN theory_hours_per_week
+    WHEN subject_type = 'Theory' THEN GREATEST(total_hours, total_hours_semester)
+    ELSE 0
+END;
+
+UPDATE subjects
+SET practical_hours = CASE
+    WHEN practical_hours > 0 THEN practical_hours
+    WHEN practical_hours_per_week > 0 THEN practical_hours_per_week
+    WHEN subject_type = 'Practical' THEN GREATEST(total_hours, total_hours_semester)
+    ELSE 0
+END;
+
+UPDATE subjects
+SET total_hours = CASE
+    WHEN total_hours > 0 THEN total_hours
+    WHEN total_hours_semester > 0 THEN total_hours_semester
+    ELSE theory_hours + practical_hours
+END;
+
+UPDATE subjects
+SET requires_lab = CASE
+    WHEN subject_type = 'Practical' THEN TRUE
+    WHEN subject_type = 'Theory + Practical' AND practical_hours > 0 THEN TRUE
+    ELSE FALSE
+END;
+
+UPDATE subjects
+SET theory_hours_per_week = theory_hours,
+    practical_hours_per_week = practical_hours,
+    total_hours_semester = total_hours;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'subjects_subject_type_check'
+    ) THEN
+        ALTER TABLE subjects
+        DROP CONSTRAINT subjects_subject_type_check;
+    END IF;
+
+    ALTER TABLE subjects
+    ADD CONSTRAINT subjects_subject_type_check
+    CHECK (subject_type IN ('Theory', 'Practical', 'Theory + Practical', 'Both'));
+END $$;
+
 CREATE TABLE IF NOT EXISTS faculty_subjects (
     id SERIAL PRIMARY KEY,
     faculty_id INTEGER REFERENCES faculty(id) ON DELETE CASCADE,
@@ -300,6 +402,37 @@ CREATE TABLE IF NOT EXISTS laboratories (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS department_schedule_config (
+    id SERIAL PRIMARY KEY,
+    department_id INTEGER NOT NULL UNIQUE REFERENCES departments(id) ON DELETE CASCADE,
+    start_time TIME NOT NULL,
+    end_time TIME NOT NULL,
+    slot_duration_minutes INTEGER NOT NULL CHECK (slot_duration_minutes > 0),
+    break_start_time TIME,
+    break_duration_minutes INTEGER NOT NULL DEFAULT 0 CHECK (break_duration_minutes >= 0),
+    working_days VARCHAR(20) NOT NULL CHECK (working_days IN ('Mon-Fri', 'Mon-Sat')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_department_schedule_time_window CHECK (end_time > start_time),
+    CONSTRAINT chk_department_schedule_break_window CHECK (
+        (break_duration_minutes = 0 AND break_start_time IS NULL)
+        OR (
+            break_duration_minutes > 0
+            AND break_start_time IS NOT NULL
+            AND break_start_time >= start_time
+            AND (break_start_time + (break_duration_minutes || ' minutes')::interval) <= end_time
+        )
+    )
+);
+
+CREATE TABLE IF NOT EXISTS semester_durations (
+    id SERIAL PRIMARY KEY,
+    semester_id INTEGER NOT NULL UNIQUE REFERENCES semesters(id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CHECK (end_date >= start_date)
+);
+
 CREATE TABLE IF NOT EXISTS scheduling_parameters (
     id SERIAL PRIMARY KEY,
     class_duration_minutes INTEGER NOT NULL DEFAULT 60 CHECK (class_duration_minutes > 0),
@@ -315,12 +448,45 @@ CREATE TABLE IF NOT EXISTS scheduling_parameters (
 
 CREATE TABLE IF NOT EXISTS time_slots (
     id SERIAL PRIMARY KEY,
+    department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE,
     day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 7),
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
     slot_number INTEGER NOT NULL CHECK (slot_number > 0),
-    UNIQUE (day_of_week, slot_number)
+    CONSTRAINT uq_time_slots_department_day_slot UNIQUE (department_id, day_of_week, slot_number)
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'time_slots'
+          AND column_name = 'department_id'
+    ) THEN
+        ALTER TABLE time_slots
+        ADD COLUMN department_id INTEGER REFERENCES departments(id) ON DELETE CASCADE;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'time_slots_day_of_week_slot_number_key'
+    ) THEN
+        ALTER TABLE time_slots
+        DROP CONSTRAINT time_slots_day_of_week_slot_number_key;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'uq_time_slots_department_day_slot'
+    ) THEN
+        ALTER TABLE time_slots
+        ADD CONSTRAINT uq_time_slots_department_day_slot
+        UNIQUE (department_id, day_of_week, slot_number);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS timetables (
     id SERIAL PRIMARY KEY,
@@ -347,11 +513,56 @@ CREATE TABLE IF NOT EXISTS timetable_entries (
     faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE RESTRICT,
     classroom_id INTEGER NOT NULL REFERENCES classrooms(id) ON DELETE RESTRICT,
     timeslot_id INTEGER NOT NULL REFERENCES time_slots(id) ON DELETE RESTRICT,
+    session_mode VARCHAR(20) NOT NULL DEFAULT 'Theory' CHECK (session_mode IN ('Theory', 'Practical')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (faculty_id, timeslot_id),
     UNIQUE (classroom_id, timeslot_id),
     UNIQUE (section_id, timeslot_id)
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'timetable_entries'
+          AND column_name = 'session_mode'
+    ) THEN
+        ALTER TABLE timetable_entries
+        ADD COLUMN session_mode VARCHAR(20);
+
+        UPDATE timetable_entries te
+        SET session_mode = CASE
+            WHEN c.room_type = 'Lab' THEN 'Practical'
+            ELSE 'Theory'
+        END
+        FROM classrooms c
+        WHERE te.classroom_id = c.id;
+
+        ALTER TABLE timetable_entries
+        ALTER COLUMN session_mode SET DEFAULT 'Theory';
+
+        UPDATE timetable_entries
+        SET session_mode = 'Theory'
+        WHERE session_mode IS NULL;
+
+        ALTER TABLE timetable_entries
+        ALTER COLUMN session_mode SET NOT NULL;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'timetable_entries_session_mode_check'
+    ) THEN
+        ALTER TABLE timetable_entries
+        DROP CONSTRAINT timetable_entries_session_mode_check;
+    END IF;
+
+    ALTER TABLE timetable_entries
+    ADD CONSTRAINT timetable_entries_session_mode_check
+    CHECK (session_mode IN ('Theory', 'Practical'));
+END $$;
 
 CREATE TABLE IF NOT EXISTS approvals (
     id SERIAL PRIMARY KEY,
@@ -389,6 +600,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_sections_name_per_branch
 ON sections (branch_id, (LOWER(section_name)));
 CREATE UNIQUE INDEX IF NOT EXISTS uq_subject_code_per_branch
 ON subjects (branch_id, (LOWER(subject_code)));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_department_schedule_config_department
+ON department_schedule_config (department_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_semester_durations_semester
+ON semester_durations (semester_id);
 CREATE INDEX IF NOT EXISTS idx_faculty_departments_faculty_user_id ON faculty_departments(faculty_user_id);
 CREATE INDEX IF NOT EXISTS idx_faculty_departments_department_id ON faculty_departments(department_id);
 CREATE INDEX IF NOT EXISTS idx_faculty_subjects_faculty_id ON faculty_subjects(faculty_id);
@@ -401,5 +616,6 @@ CREATE INDEX IF NOT EXISTS idx_timetable_entries_timeslot_id ON timetable_entrie
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_section_id ON timetable_entries(section_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_subject_id ON timetable_entries(subject_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_faculty_id ON timetable_entries(faculty_id);
+CREATE INDEX IF NOT EXISTS idx_time_slots_department_id ON time_slots(department_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_history_created_at ON timetable_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recent_activity_created_at ON recent_activity(created_at DESC);
