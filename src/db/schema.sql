@@ -408,21 +408,82 @@ CREATE TABLE IF NOT EXISTS department_schedule_config (
     start_time TIME NOT NULL,
     end_time TIME NOT NULL,
     slot_duration_minutes INTEGER NOT NULL CHECK (slot_duration_minutes > 0),
-    break_start_time TIME,
     break_duration_minutes INTEGER NOT NULL DEFAULT 0 CHECK (break_duration_minutes >= 0),
+    break_after_slot_number INTEGER,
     working_days VARCHAR(20) NOT NULL CHECK (working_days IN ('Mon-Fri', 'Mon-Sat')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_department_schedule_time_window CHECK (end_time > start_time),
-    CONSTRAINT chk_department_schedule_break_window CHECK (
-        (break_duration_minutes = 0 AND break_start_time IS NULL)
+    CONSTRAINT chk_department_schedule_break_config CHECK (
+        (break_duration_minutes = 0 AND break_after_slot_number IS NULL)
         OR (
             break_duration_minutes > 0
-            AND break_start_time IS NOT NULL
-            AND break_start_time >= start_time
-            AND (break_start_time + (break_duration_minutes || ' minutes')::interval) <= end_time
+            AND break_after_slot_number IS NOT NULL
+            AND break_after_slot_number > 0
         )
     )
 );
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'department_schedule_config'
+          AND column_name = 'break_after_slot_number'
+    ) THEN
+        ALTER TABLE department_schedule_config
+        ADD COLUMN break_after_slot_number INTEGER;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'department_schedule_config'
+          AND column_name = 'break_start_time'
+    ) THEN
+        UPDATE department_schedule_config
+        SET break_after_slot_number = GREATEST(
+            1,
+            FLOOR(
+                EXTRACT(EPOCH FROM (break_start_time - start_time)) / 60
+                / NULLIF(slot_duration_minutes, 0)
+            )::int
+        )
+        WHERE break_duration_minutes > 0
+          AND break_after_slot_number IS NULL
+          AND break_start_time IS NOT NULL
+          AND slot_duration_minutes > 0;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_department_schedule_break_window'
+    ) THEN
+        ALTER TABLE department_schedule_config
+        DROP CONSTRAINT chk_department_schedule_break_window;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'chk_department_schedule_break_config'
+    ) THEN
+        ALTER TABLE department_schedule_config
+        DROP CONSTRAINT chk_department_schedule_break_config;
+    END IF;
+
+    ALTER TABLE department_schedule_config
+    ADD CONSTRAINT chk_department_schedule_break_config
+    CHECK (
+        (break_duration_minutes = 0 AND break_after_slot_number IS NULL)
+        OR (
+            break_duration_minutes > 0
+            AND break_after_slot_number IS NOT NULL
+            AND break_after_slot_number > 0
+        )
+    );
+END $$;
 
 CREATE TABLE IF NOT EXISTS semester_durations (
     id SERIAL PRIMARY KEY,

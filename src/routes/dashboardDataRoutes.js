@@ -91,9 +91,9 @@ function toTimeMinutes(value) {
 function validateDepartmentScheduleWindow({
   startTime,
   endTime,
-  breakStartTime,
   breakDurationMinutes,
   slotDurationMinutes,
+  breakAfterSlotNumber,
 }) {
   const startMinutes = toTimeMinutes(startTime);
   const endMinutes = toTimeMinutes(endTime);
@@ -118,18 +118,51 @@ function validateDepartmentScheduleWindow({
     return "Break duration must be a non-negative integer";
   }
 
+  const totalWindowMinutes = endMinutes - startMinutes;
+  if (breakDurationMinutes > totalWindowMinutes) {
+    return "Break duration must be within configured working hours";
+  }
+
   if (breakDurationMinutes === 0) {
+    if (breakAfterSlotNumber !== null && breakAfterSlotNumber !== undefined) {
+      return "Break after slot number should be empty when break duration is 0";
+    }
     return "";
   }
 
-  const breakStartMinutes = toTimeMinutes(breakStartTime);
-  if (breakStartMinutes === null) {
-    return "Break start time is required when break duration is greater than zero";
+  if (!Number.isInteger(breakAfterSlotNumber) || breakAfterSlotNumber <= 0) {
+    return "Break after slot number is required when break duration is greater than zero";
   }
 
-  const breakEndMinutes = breakStartMinutes + breakDurationMinutes;
-  if (breakStartMinutes < startMinutes || breakEndMinutes > endMinutes) {
-    return "Break must be within configured working hours";
+  let cursor = startMinutes;
+  let slotsCreated = 0;
+  let breakApplied = false;
+
+  while (cursor < endMinutes) {
+    if (!breakApplied && slotsCreated === breakAfterSlotNumber) {
+      if (cursor + breakDurationMinutes > endMinutes) {
+        return "Break does not fit inside configured working hours";
+      }
+      cursor += breakDurationMinutes;
+      breakApplied = true;
+      continue;
+    }
+
+    const remainingMinutes = endMinutes - cursor;
+    if (remainingMinutes <= 0) {
+      break;
+    }
+
+    cursor += Math.min(slotDurationMinutes, remainingMinutes);
+    slotsCreated += 1;
+  }
+
+  if (slotsCreated === 0) {
+    return "Configured timing does not produce any valid slot";
+  }
+
+  if (!breakApplied) {
+    return "Break after slot number exceeds available slots in the schedule";
   }
 
   return "";
@@ -436,11 +469,12 @@ router.get("/department-schedule-config", authRequired, async (req, res, next) =
       limit,
       querySql: `
         SELECT dsc.id, dsc.department_id, dsc.start_time, dsc.end_time, dsc.slot_duration_minutes,
-               dsc.break_start_time, dsc.break_duration_minutes, dsc.working_days, dsc.created_at,
+               dsc.break_duration_minutes, dsc.break_after_slot_number, dsc.working_days, dsc.created_at,
                d.department_name, d.department_code
         FROM department_schedule_config dsc
         JOIN departments d ON d.id = dsc.department_id
-        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1)
+        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1
+               OR CAST(dsc.break_after_slot_number AS TEXT) ILIKE $1)
         ORDER BY dsc.id DESC
         LIMIT $2 OFFSET $3
       `,
@@ -449,7 +483,8 @@ router.get("/department-schedule-config", authRequired, async (req, res, next) =
         SELECT COUNT(*)::int AS total
         FROM department_schedule_config dsc
         JOIN departments d ON d.id = dsc.department_id
-        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1)
+        WHERE ($1 = '' OR d.department_name ILIKE $1 OR d.department_code ILIKE $1 OR dsc.working_days ILIKE $1
+               OR CAST(dsc.break_after_slot_number AS TEXT) ILIKE $1)
       `,
       countValues: [q],
     });
@@ -473,22 +508,32 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
         ? 0
         : asNonNegativeInt(req.body.break_duration_minutes, -1);
     const breakDurationMinutes = rawBreakDuration < 0 ? -1 : rawBreakDuration;
-    const breakStartTime = breakDurationMinutes > 0 ? normalizeTimeValue(req.body.break_start_time) : "";
+    const breakAfterSlotNumberRaw = req.body.break_after_slot_number;
+    const breakAfterSlotNumber =
+      breakAfterSlotNumberRaw === undefined || breakAfterSlotNumberRaw === null || breakAfterSlotNumberRaw === ""
+        ? null
+        : asPositiveInt(breakAfterSlotNumberRaw, 0);
     const workingDays = normalizeWorkingDays(req.body.working_days);
 
-    if (!departmentId || !startTime || !endTime || !slotDurationMinutes || breakDurationMinutes < 0 || !workingDays) {
+    if (
+      !departmentId ||
+      !startTime ||
+      !endTime ||
+      !slotDurationMinutes ||
+      breakDurationMinutes < 0 ||
+      (!workingDays)
+    ) {
       return res.status(400).json({
-        message:
-          "Department, start time, end time, slot duration, break duration and working days are required",
+        message: "Department, start time, end time, slot duration, break duration and working days are required",
       });
     }
 
     const scheduleValidationMessage = validateDepartmentScheduleWindow({
       startTime,
       endTime,
-      breakStartTime,
       breakDurationMinutes,
       slotDurationMinutes,
+      breakAfterSlotNumber,
     });
     if (scheduleValidationMessage) {
       return res.status(400).json({ message: scheduleValidationMessage });
@@ -512,7 +557,7 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
 
     const inserted = await pool.query(
       `INSERT INTO department_schedule_config
-      (department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days)
+      (department_id, start_time, end_time, slot_duration_minutes, break_duration_minutes, break_after_slot_number, working_days)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *`,
       [
@@ -520,8 +565,8 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
         startTime,
         endTime,
         slotDurationMinutes,
-        breakDurationMinutes > 0 ? breakStartTime : null,
         breakDurationMinutes,
+        breakDurationMinutes > 0 ? breakAfterSlotNumber : null,
         workingDays,
       ]
     );
@@ -553,7 +598,8 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
     }
 
     const existingResult = await pool.query(
-      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_start_time, break_duration_minutes, working_days
+      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_duration_minutes,
+              break_after_slot_number, working_days
        FROM department_schedule_config
        WHERE id = $1`,
       [configId]
@@ -577,10 +623,14 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
       req.body.break_duration_minutes === undefined
         ? asNonNegativeInt(current.break_duration_minutes, 0)
         : asNonNegativeInt(req.body.break_duration_minutes, -1);
-    const breakStartTime =
-      req.body.break_start_time === undefined
-        ? normalizeTimeValue(current.break_start_time)
-        : normalizeTimeValue(req.body.break_start_time);
+    const breakAfterSlotNumber =
+      req.body.break_after_slot_number === undefined
+        ? current.break_after_slot_number === null
+          ? null
+          : asPositiveInt(current.break_after_slot_number, 0)
+        : req.body.break_after_slot_number === null || req.body.break_after_slot_number === ""
+          ? null
+          : asPositiveInt(req.body.break_after_slot_number, 0);
     const workingDays =
       req.body.working_days === undefined ? normalizeWorkingDays(current.working_days) : normalizeWorkingDays(req.body.working_days);
 
@@ -591,13 +641,12 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
       });
     }
 
-    const effectiveBreakStartTime = breakDurationMinutes > 0 ? breakStartTime : "";
     const scheduleValidationMessage = validateDepartmentScheduleWindow({
       startTime,
       endTime,
-      breakStartTime: effectiveBreakStartTime,
       breakDurationMinutes,
       slotDurationMinutes,
+      breakAfterSlotNumber,
     });
     if (scheduleValidationMessage) {
       return res.status(400).json({ message: scheduleValidationMessage });
@@ -626,8 +675,8 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
            start_time = $2,
            end_time = $3,
            slot_duration_minutes = $4,
-           break_start_time = $5,
-           break_duration_minutes = $6,
+           break_duration_minutes = $5,
+           break_after_slot_number = $6,
            working_days = $7
        WHERE id = $8
        RETURNING *`,
@@ -636,8 +685,8 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
         startTime,
         endTime,
         slotDurationMinutes,
-        breakDurationMinutes > 0 ? effectiveBreakStartTime : null,
         breakDurationMinutes,
+        breakDurationMinutes > 0 ? breakAfterSlotNumber : null,
         workingDays,
         configId,
       ]

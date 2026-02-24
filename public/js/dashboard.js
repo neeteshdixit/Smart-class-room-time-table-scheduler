@@ -74,12 +74,12 @@ const state = {
 
 const entityOrder = [
   "departments",
+  "department_schedule_config",
   "branches",
   "sections",
   "blocks",
   "classrooms",
   "laboratories",
-  "time_slots",
   "faculty",
   "subjects",
   "semesters",
@@ -87,6 +87,7 @@ const entityOrder = [
 
 const infoCrudResources = new Set([
   "departments",
+  "department_schedule_config",
   "branches",
   "sections",
   "faculty",
@@ -133,8 +134,13 @@ const entityConfig = {
           { value: "Mon-Sat", label: "Mon-Sat" },
         ],
       },
-      { name: "break_start_time", label: "Break Start Time", type: "time" },
       { name: "break_duration_minutes", label: "Break Duration (min)", type: "number", required: true, min: 0 },
+      {
+        name: "break_after_slot_number",
+        label: "Break After Slot #",
+        type: "number",
+        min: 1,
+      },
     ],
     columns: [
       "ID",
@@ -142,8 +148,8 @@ const entityConfig = {
       "Start",
       "End",
       "Slot Min",
-      "Break Start",
       "Break Min",
+      "Break After Slot",
       "Days",
     ],
     mapRow: (row) => [
@@ -152,8 +158,8 @@ const entityConfig = {
       formatClockTime(row.start_time),
       formatClockTime(row.end_time),
       row.slot_duration_minutes,
-      row.break_start_time ? formatClockTime(row.break_start_time) : "-",
       row.break_duration_minutes,
+      row.break_after_slot_number ?? "-",
       row.working_days,
     ],
   },
@@ -1066,7 +1072,12 @@ function normalizePayload(resourceKey, payload) {
   const converted = { ...payload };
 
   const toIntKeys = {
-    department_schedule_config: ["department_id", "slot_duration_minutes", "break_duration_minutes"],
+    department_schedule_config: [
+      "department_id",
+      "slot_duration_minutes",
+      "break_duration_minutes",
+      "break_after_slot_number",
+    ],
     branches: ["department_id"],
     sections: ["branch_id", "semester_id"],
     blocks: ["number_of_floors"],
@@ -1095,8 +1106,8 @@ function normalizePayload(resourceKey, payload) {
     }
   }
 
-  if (resourceKey === "department_schedule_config" && !String(converted.break_start_time || "").trim()) {
-    delete converted.break_start_time;
+  if (resourceKey === "department_schedule_config" && !String(converted.break_after_slot_number || "").trim()) {
+    delete converted.break_after_slot_number;
   }
 
   return converted;

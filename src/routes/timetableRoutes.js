@@ -188,28 +188,28 @@ async function loadAvailableTimeSlots(queryable, departmentId) {
     return result.rows;
   }
 
-  const result = await queryable.query(
+  const departmentSlotsResult = await queryable.query(
     `SELECT id, day_of_week, start_time, end_time, slot_number
-     FROM (
-       SELECT ts.id, ts.day_of_week, ts.start_time, ts.end_time, ts.slot_number,
-              ROW_NUMBER() OVER (
-                PARTITION BY ts.day_of_week, ts.slot_number
-                ORDER BY
-                  CASE
-                    WHEN ts.department_id = $1 THEN 0
-                    WHEN ts.department_id IS NULL THEN 1
-                    ELSE 2
-                  END,
-                  ts.id
-              ) AS slot_rank
-       FROM time_slots ts
-     ) ranked
-     WHERE ranked.slot_rank = 1
+     FROM time_slots
+     WHERE department_id = $1
      ORDER BY day_of_week, slot_number, id`,
     [departmentId]
   );
+  if (departmentSlotsResult.rowCount > 0) {
+    return departmentSlotsResult.rows;
+  }
 
-  return result.rows;
+  const nullDepartmentSlotsResult = await queryable.query(
+    `SELECT id, day_of_week, start_time, end_time, slot_number
+     FROM time_slots
+     WHERE department_id IS NULL
+     ORDER BY day_of_week, slot_number, id`
+  );
+  if (nullDepartmentSlotsResult.rowCount > 0) {
+    return nullDepartmentSlotsResult.rows;
+  }
+
+  return [];
 }
 
 function buildDepartmentSlotTemplates(scheduleConfig) {
@@ -217,7 +217,10 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
   const endMinutes = toTimeMinutes(scheduleConfig.end_time);
   const slotDurationMinutes = asNonNegativeInteger(scheduleConfig.slot_duration_minutes, 0);
   const breakDurationMinutes = asNonNegativeInteger(scheduleConfig.break_duration_minutes, 0);
-  const breakStartMinutes = breakDurationMinutes > 0 ? toTimeMinutes(scheduleConfig.break_start_time) : null;
+  const breakAfterSlotNumber =
+    scheduleConfig.break_after_slot_number === null || scheduleConfig.break_after_slot_number === undefined
+      ? null
+      : Number(scheduleConfig.break_after_slot_number);
 
   if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
     throw new Error("Department schedule has invalid start/end time");
@@ -225,14 +228,11 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
   if (slotDurationMinutes <= 0) {
     throw new Error("Department schedule has invalid slot duration");
   }
-  if (breakDurationMinutes > 0 && breakStartMinutes === null) {
-    throw new Error("Department schedule has invalid break start time");
+  if (breakDurationMinutes < 0) {
+    throw new Error("Department schedule has invalid break duration");
   }
-  if (
-    breakDurationMinutes > 0 &&
-    (breakStartMinutes < startMinutes || breakStartMinutes + breakDurationMinutes > endMinutes)
-  ) {
-    throw new Error("Department break must be within configured working hours");
+  if (breakDurationMinutes > 0 && (!Number.isInteger(breakAfterSlotNumber) || breakAfterSlotNumber <= 0)) {
+    throw new Error("Department schedule requires a valid break-after slot number");
   }
 
   const templates = [];
@@ -240,25 +240,22 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
   let slotNumber = 1;
   let breakApplied = false;
 
-  while (cursor + slotDurationMinutes <= endMinutes) {
-    if (breakDurationMinutes > 0 && !breakApplied && breakStartMinutes !== null) {
-      if (cursor >= breakStartMinutes) {
-        cursor += breakDurationMinutes;
-        breakApplied = true;
-        continue;
+  while (cursor < endMinutes) {
+    if (breakDurationMinutes > 0 && !breakApplied && slotNumber - 1 === breakAfterSlotNumber) {
+      if (cursor + breakDurationMinutes > endMinutes) {
+        throw new Error("Department break must be within configured working hours");
       }
-
-      if (cursor < breakStartMinutes && cursor + slotDurationMinutes > breakStartMinutes) {
-        cursor = breakStartMinutes + breakDurationMinutes;
-        breakApplied = true;
-        continue;
-      }
+      cursor += breakDurationMinutes;
+      breakApplied = true;
+      continue;
     }
 
-    const slotEnd = cursor + slotDurationMinutes;
-    if (slotEnd > endMinutes) {
+    const remainingMinutes = endMinutes - cursor;
+    if (remainingMinutes <= 0) {
       break;
     }
+    const slotLength = Math.min(slotDurationMinutes, remainingMinutes);
+    const slotEnd = cursor + slotLength;
 
     templates.push({
       slot_number: slotNumber,
@@ -271,6 +268,10 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
 
   if (templates.length === 0) {
     throw new Error("Department schedule did not produce any valid slots");
+  }
+
+  if (breakDurationMinutes > 0 && !breakApplied) {
+    throw new Error("Break after slot number exceeds available generated slots");
   }
 
   return templates;
@@ -425,6 +426,20 @@ async function generateTimetableHandler(req, res, next) {
       return res.status(400).json({ message: "Invalid semester selected" });
     }
     const departmentId = Number(semesterMetaResult.rows[0].department_id);
+    const departmentScheduleResult = await client.query(
+      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_duration_minutes,
+              break_after_slot_number, working_days
+       FROM department_schedule_config
+       WHERE department_id = $1
+       LIMIT 1`,
+      [departmentId]
+    );
+    if (departmentScheduleResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: "Department working hours are not configured. Configure department schedule first.",
+      });
+    }
 
     const semesterDurationResult = await client.query(
       `SELECT start_date, end_date
@@ -491,10 +506,18 @@ async function generateTimetableHandler(req, res, next) {
       return res.status(400).json({ message: "No classrooms configured" });
     }
 
-    const slots = await loadAvailableTimeSlots(client, departmentId);
+    let slots = [];
+    try {
+      slots = await ensureDepartmentTimeSlots(client, departmentId, departmentScheduleResult.rows[0]);
+    } catch (scheduleErr) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: scheduleErr.message || "Invalid department schedule configuration",
+      });
+    }
     if (!slots.length) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ message: "No time slots configured. Add time slots before generating timetable." });
+      return res.status(400).json({ message: "No valid slots generated from department schedule" });
     }
 
     const lectureRooms = roomsResult.rows.filter((room) => room.room_type === "Lecture");

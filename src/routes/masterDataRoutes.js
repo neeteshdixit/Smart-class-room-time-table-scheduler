@@ -114,8 +114,8 @@ const resourceConfig = {
       "start_time",
       "end_time",
       "slot_duration_minutes",
-      "break_start_time",
       "break_duration_minutes",
+      "break_after_slot_number",
       "working_days",
     ],
     required: [
@@ -165,6 +165,10 @@ function getConfig(resource) {
   return resourceConfig[resource] || null;
 }
 
+function isManualTimeSlotResource(resource) {
+  return resource === "time-slots";
+}
+
 router.get("/:resource", authRequired, async (req, res, next) => {
   try {
     const config = getConfig(req.params.resource);
@@ -211,6 +215,12 @@ router.post("/:resource", authRequired, async (req, res, next) => {
       });
     }
 
+    if (isManualTimeSlotResource(req.params.resource)) {
+      return res.status(400).json({
+        message: "Manual time slot creation is disabled. Configure department schedule and generate timetable.",
+      });
+    }
+
     const missingFields = config.required.filter((field) => req.body[field] === undefined);
     if (missingFields.length > 0) {
       return res.status(400).json({
@@ -253,6 +263,12 @@ router.put("/:resource/:id", authRequired, async (req, res, next) => {
       return res.status(404).json({ message: "Unknown resource" });
     }
 
+    if (isManualTimeSlotResource(req.params.resource)) {
+      return res.status(400).json({
+        message: "Manual time slot update is disabled. Configure department schedule and generate timetable.",
+      });
+    }
+
     const updates = config.fields.filter((field) => req.body[field] !== undefined);
 
     if (updates.length === 0) {
@@ -293,6 +309,12 @@ router.delete("/:resource/:id", authRequired, async (req, res, next) => {
     const config = getConfig(req.params.resource);
     if (!config) {
       return res.status(404).json({ message: "Unknown resource" });
+    }
+
+    if (isManualTimeSlotResource(req.params.resource)) {
+      return res.status(400).json({
+        message: "Manual time slot deletion is disabled. Configure department schedule and generate timetable.",
+      });
     }
 
     const result = await pool.query(
