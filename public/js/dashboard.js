@@ -123,13 +123,31 @@ const entityConfig = {
       { name: "department_id", label: "Department", type: "select", optionsKey: "departments", required: true },
       { name: "start_time", label: "Start Time", type: "time", required: true },
       { name: "end_time", label: "End Time", type: "time", required: true },
+      { name: "slot_duration_minutes", label: "Slot Duration (min)", type: "number", required: true, min: 1 },
+      { name: "break_duration_minutes", label: "Lunch Break (min)", type: "number", required: true, min: 0 },
+      { name: "break_after_slot_number", label: "Break After Slot #", type: "number", min: 1 },
+      {
+        name: "working_days",
+        label: "Working Days",
+        type: "select",
+        required: true,
+        staticOptions: [
+          { value: "Mon-Fri", label: "Mon-Fri" },
+          { value: "Mon-Sat", label: "Mon-Sat" },
+        ],
+      },
     ],
-    columns: ["ID", "Department", "Start", "End"],
+    columns: ["ID", "Department", "Start", "End", "Slot", "Lunch Break", "Days"],
     mapRow: (row) => [
       row.id,
       row.department_name,
       formatClockTime(row.start_time),
       formatClockTime(row.end_time),
+      row.slot_duration_minutes,
+      Number(row.break_duration_minutes || 0) > 0
+        ? `${row.break_duration_minutes} min after #${row.break_after_slot_number}`
+        : "No break",
+      row.working_days || "Mon-Fri",
     ],
   },
   branches: {

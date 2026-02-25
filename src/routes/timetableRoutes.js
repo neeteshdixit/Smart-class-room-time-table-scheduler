@@ -257,7 +257,10 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
     if (remainingMinutes <= 0) {
       break;
     }
-    const slotLength = Math.min(slotDurationMinutes, remainingMinutes);
+    if (remainingMinutes < slotDurationMinutes) {
+      break;
+    }
+    const slotLength = slotDurationMinutes;
     const slotEnd = cursor + slotLength;
 
     templates.push({
@@ -283,6 +286,7 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
 async function ensureDepartmentTimeSlots(client, departmentId, scheduleConfig) {
   const slotTemplates = buildDepartmentSlotTemplates(scheduleConfig);
   const workingDays = resolveWorkingDays(scheduleConfig.working_days);
+  const slotNumbers = slotTemplates.map((template) => Number(template.slot_number));
   const createdSlots = [];
 
   for (const day of workingDays) {
@@ -300,6 +304,16 @@ async function ensureDepartmentTimeSlots(client, departmentId, scheduleConfig) {
       createdSlots.push(slotResult.rows[0]);
     }
   }
+
+  await client.query(
+    `DELETE FROM time_slots
+     WHERE department_id = $1
+       AND (
+         NOT (day_of_week = ANY($2::int[]))
+         OR NOT (slot_number = ANY($3::int[]))
+       )`,
+    [departmentId, workingDays, slotNumbers]
+  );
 
   return createdSlots.sort((a, b) =>
     Number(a.day_of_week) === Number(b.day_of_week)
@@ -452,6 +466,7 @@ const ISSUE_LABELS = Object.freeze({
 const CONFLICT_SUMMARY_LABELS = Object.freeze({
   missing_faculty_mapping: "Missing Faculty Mapping",
   no_lab_available: "No Lab Available",
+  no_classroom_available: "No Classroom Available",
   room_clash: "Room Clash",
   faculty_clash: "Faculty Clash",
   section_clash: "Section Clash",
@@ -503,6 +518,7 @@ function createConflictSummaryBuckets() {
   return {
     missing_faculty_mapping: new Set(),
     no_lab_available: new Set(),
+    no_classroom_available: new Set(),
     room_clash: new Set(),
     faculty_clash: new Set(),
     section_clash: new Set(),
@@ -513,9 +529,10 @@ function createConflictSummaryBuckets() {
 
 function conflictReasonToSummaryKey(reason) {
   if (reason === CONFLICT_REASON.MISSING_FACULTY) return "missing_faculty_mapping";
-  if (reason === CONFLICT_REASON.NO_LAB_AVAILABLE || reason === CONFLICT_REASON.NO_SUITABLE_ROOM) {
+  if (reason === CONFLICT_REASON.NO_LAB_AVAILABLE) {
     return "no_lab_available";
   }
+  if (reason === CONFLICT_REASON.NO_SUITABLE_ROOM) return "no_classroom_available";
   if (reason === CONFLICT_REASON.ROOM_CLASH) return "room_clash";
   if (reason === CONFLICT_REASON.FACULTY_CLASH) return "faculty_clash";
   if (reason === CONFLICT_REASON.SECTION_CLASH) return "section_clash";
@@ -1032,32 +1049,56 @@ async function generateTimetableHandler(req, res, next) {
       return { success: false, reason: pickDominantReason(counters) };
     }
 
+    const sessionRequests = [];
     for (const section of sectionsResult.rows) {
       for (const subject of subjectsResult.rows) {
         const demands = getSessionDemands(subject, totalWeeks, slotDurationMinutes);
         for (const demand of demands) {
           for (let i = 0; i < demand.count; i += 1) {
-            const assigned = tryAssign(section, subject, demand.mode);
-            if (assigned.success) {
-              entries.push(assigned.entry);
-            } else {
-              const reasonLabel = CONFLICT_REASON_LABELS[assigned.reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
-              const summaryKey = conflictReasonToSummaryKey(assigned.reason);
-              const conflictItem = `${section.section_name} - ${subject.subject_name}`;
-              conflicts.push({
-                section_id: section.id,
-                section_name: section.section_name,
-                subject_id: subject.id,
-                subject_name: subject.subject_name,
-                mode: demand.mode,
-                requested_per_week: demand.count,
-                reason: reasonLabel,
-                reason_key: assigned.reason,
-              });
-              conflictSummaryBuckets[summaryKey].add(conflictItem);
-            }
+            sessionRequests.push({
+              section,
+              subject,
+              mode: demand.mode,
+              requested_per_week: demand.count,
+            });
           }
         }
+      }
+    }
+
+    sessionRequests.sort((a, b) => {
+      const aPractical = a.mode === "Practical" ? 0 : 1;
+      const bPractical = b.mode === "Practical" ? 0 : 1;
+      if (aPractical !== bPractical) return aPractical - bPractical;
+
+      const aStrength = Number(a.section.student_strength || 0);
+      const bStrength = Number(b.section.student_strength || 0);
+      if (aStrength !== bStrength) return bStrength - aStrength;
+
+      const bySection = String(a.section.section_name || "").localeCompare(String(b.section.section_name || ""));
+      if (bySection !== 0) return bySection;
+      return String(a.subject.subject_name || "").localeCompare(String(b.subject.subject_name || ""));
+    });
+
+    for (const request of sessionRequests) {
+      const assigned = tryAssign(request.section, request.subject, request.mode);
+      if (assigned.success) {
+        entries.push(assigned.entry);
+      } else {
+        const reasonLabel = CONFLICT_REASON_LABELS[assigned.reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
+        const summaryKey = conflictReasonToSummaryKey(assigned.reason);
+        const conflictItem = `${request.section.section_name} - ${request.subject.subject_name}`;
+        conflicts.push({
+          section_id: request.section.id,
+          section_name: request.section.section_name,
+          subject_id: request.subject.id,
+          subject_name: request.subject.subject_name,
+          mode: request.mode,
+          requested_per_week: request.requested_per_week,
+          reason: reasonLabel,
+          reason_key: assigned.reason,
+        });
+        conflictSummaryBuckets[summaryKey].add(conflictItem);
       }
     }
 
