@@ -291,6 +291,7 @@ const entityConfig = {
       { name: "department_id", label: "Department", type: "select", optionsKey: "departments", required: true },
       { name: "branch_id", label: "Branch", type: "select", optionsKey: "branches", required: true, dependsOn: "department_id" },
       { name: "semester_id", label: "Semester", type: "select", optionsKey: "semesters", required: true, dependsOn: "branch_id" },
+      { name: "faculty_user_ids", label: "Faculty", type: "multiselect", optionsKey: "faculty", required: true },
       {
         name: "subject_type",
         label: "Type",
@@ -313,6 +314,7 @@ const entityConfig = {
       "Department",
       "Branch",
       "Semester",
+      "Faculty",
       "Type",
       "Total",
       "Weekly (Auto)",
@@ -326,6 +328,7 @@ const entityConfig = {
       row.department_name,
       row.branch_name,
       `${row.semester_number} (${row.academic_year})`,
+      row.faculty_names || "-",
       row.subject_type,
       row.total_hours ?? row.total_hours_semester ?? 0,
       row.weekly_hours ?? "-",
@@ -855,6 +858,12 @@ async function getFormOptions(resourceKey) {
       } else if (key === "blocks") {
         const result = await fetchList("/master/blocks", { page: 1, limit: 300 });
         optionMap.blocks = result.data;
+      } else if (key === "faculty") {
+        const result = await fetchListWithFallback("/faculty", "/master/faculty", {
+          page: 1,
+          limit: 500,
+        });
+        optionMap.faculty = result.data;
       }
     })
   );
@@ -900,6 +909,14 @@ function buildOptionsHtml(field, optionsByKey) {
       .map((item) => `<option value="${item.id}">${escapeHtml(item.block_name)} (Floors: ${escapeHtml(item.number_of_floors)})</option>`)
       .join("");
   }
+  if (field.optionsKey === "faculty") {
+    return list
+      .map(
+        (item) =>
+          `<option value="${item.id}">${escapeHtml(item.full_name)} (${escapeHtml(item.faculty_id)})</option>`
+      )
+      .join("");
+  }
   return "";
 }
 
@@ -911,14 +928,16 @@ function renderForm(resourceKey, optionsByKey) {
   entityFormBody.innerHTML = config.formFields
     .map((field) => {
       const required = field.required ? "required" : "";
-      if (field.type === "select") {
+      if (field.type === "select" || field.type === "multiselect") {
+        const isMulti = field.type === "multiselect";
         return `
           <div class="col-md-6" data-field-container="${escapeHtml(field.name)}">
             <label class="form-label">${escapeHtml(field.label)}</label>
-            <select class="form-select" name="${escapeHtml(field.name)}" ${required}>
-              <option value="">Select ${escapeHtml(field.label)}</option>
+            <select class="form-select" name="${escapeHtml(field.name)}" ${required} ${isMulti ? "multiple size=\"6\"" : ""}>
+              ${isMulti ? "" : `<option value="">Select ${escapeHtml(field.label)}</option>`}
               ${buildOptionsHtml(field, optionsByKey)}
             </select>
+            ${isMulti ? '<small class="text-secondary">Hold Ctrl/Cmd to select multiple faculty.</small>' : ""}
           </div>
         `;
       }
@@ -1030,6 +1049,20 @@ function bindDependentFormFilters(resourceKey) {
   }
 }
 
+function extractFormPayload(formEl, resourceKey) {
+  const config = entityConfig[resourceKey];
+  const formData = new FormData(formEl);
+  const payload = Object.fromEntries(formData.entries());
+
+  (config?.formFields || [])
+    .filter((field) => field.type === "multiselect")
+    .forEach((field) => {
+      payload[field.name] = formData.getAll(field.name).map((value) => String(value || "").trim()).filter(Boolean);
+    });
+
+  return payload;
+}
+
 function normalizePayload(resourceKey, payload) {
   const converted = { ...payload };
 
@@ -1056,6 +1089,12 @@ function normalizePayload(resourceKey, payload) {
   });
 
   if (resourceKey === "subjects") {
+    if (Array.isArray(converted.faculty_user_ids)) {
+      converted.faculty_user_ids = [...new Set(converted.faculty_user_ids
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0))];
+    }
+
     const type = String(converted.subject_type || "").trim();
     if (type !== "Theory + Practical" && type !== "Both") {
       delete converted.theory_hours;
@@ -1070,6 +1109,25 @@ function setEntityFormFieldValue(fieldName, value, triggerChange = false) {
   if (!entityFormBody) return;
   const field = entityFormBody.querySelector(`[name="${fieldName}"]`);
   if (!field) return;
+
+  if (field.tagName === "SELECT" && field.multiple) {
+    const selectedValues = Array.isArray(value)
+      ? value.map((item) => String(item))
+      : String(value || "")
+          .replace(/^\{/, "")
+          .replace(/\}$/, "")
+          .split(",")
+          .map((item) => item.trim().replace(/^"+|"+$/g, ""))
+          .filter(Boolean);
+    Array.from(field.options).forEach((option) => {
+      option.selected = selectedValues.includes(String(option.value));
+    });
+    if (triggerChange) {
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return;
+  }
+
   let normalizedValue = value === undefined || value === null ? "" : String(value);
   if (field.type === "time" && normalizedValue) {
     normalizedValue = normalizedValue.slice(0, 5);
@@ -1568,8 +1626,7 @@ if (entityForm) {
     const recordId = state.currentFormRecordId;
     if (!resource || !entityConfig[resource]) return;
 
-    const formData = new FormData(entityForm);
-    const payload = normalizePayload(resource, Object.fromEntries(formData.entries()));
+    const payload = normalizePayload(resource, extractFormPayload(entityForm, resource));
     const submitBtn = document.getElementById("entitySubmitBtn");
     if (!submitBtn) return;
 
@@ -1705,6 +1762,43 @@ if (entityInfoBody) {
   });
 }
 
+function buildPrecheckSummaryHtml(summary) {
+  if (!Array.isArray(summary) || summary.length === 0) return "";
+  const items = summary
+    .map(
+      (item) =>
+        `<li>${item.passed ? "&#10004;" : "&#10006;"} ${escapeHtml(item.label || item.key || "")}</li>`
+    )
+    .join("");
+  return `
+    <div class="mt-3">
+      <div class="small fw-semibold">Pre-Generation Validation Summary</div>
+      <ul class="small mb-0">${items}</ul>
+    </div>
+  `;
+}
+
+function buildGroupedSummaryHtml(groups) {
+  if (!Array.isArray(groups) || groups.length === 0) return "";
+  return groups
+    .map((group) => {
+      const items = Array.isArray(group.items)
+        ? group.items
+            .slice(0, 30)
+            .map((item) => `<li>${escapeHtml(item)}</li>`)
+            .join("")
+        : "";
+      if (!items) return "";
+      return `
+        <div class="mt-2">
+          <div class="small fw-semibold">${escapeHtml(group.title || group.key || "Details")}:</div>
+          <ul class="small mb-0">${items}</ul>
+        </div>
+      `;
+    })
+    .join("");
+}
+
 const generateForm = document.getElementById("generateTimetableForm");
 const generateBtn = document.getElementById("generateBtn");
 if (generateForm && generateBtn && generationResult) {
@@ -1728,6 +1822,9 @@ if (generateForm && generateBtn && generationResult) {
         })
       );
 
+      const precheckSummaryHtml = buildPrecheckSummaryHtml(result.precheck_summary);
+      const conflictSummaryHtml = buildGroupedSummaryHtml(result.conflict_summary);
+
       generationResult.innerHTML = `
         <div class="alert alert-success">
           Timetable generated. Assigned entries: <strong>${escapeHtml(result.assigned_entries)}</strong>,
@@ -1739,16 +1836,10 @@ if (generateForm && generateBtn && generationResult) {
                 )}" target="_blank" rel="noopener">Download PDF</a></div>`
               : ""
           }
+          ${precheckSummaryHtml}
+          ${conflictSummaryHtml}
         </div>
       `;
-
-      if (Array.isArray(result.conflicts) && result.conflicts.length > 0) {
-        const items = result.conflicts
-          .slice(0, 10)
-          .map((conflict) => `<li>${escapeHtml(conflict.section_name)} - ${escapeHtml(conflict.subject_name)}: ${escapeHtml(conflict.reason)}</li>`)
-          .join("");
-        generationResult.innerHTML += `<ul class="small">${items}</ul>`;
-      }
 
       showToast("Timetable generated successfully.", "success");
 
@@ -1760,7 +1851,24 @@ if (generateForm && generateBtn && generationResult) {
         }
       });
     } catch (err) {
-      handleRequestError(err);
+      const responseData = err?.responseData || {};
+      const message = getRequestErrorMessage(err);
+      const precheckSummaryHtml = buildPrecheckSummaryHtml(responseData.precheck_summary);
+      const groupedIssuesHtml = buildGroupedSummaryHtml(
+        Array.isArray(responseData.validation_groups) && responseData.validation_groups.length
+          ? responseData.validation_groups
+          : responseData.conflict_summary
+      );
+
+      generationResult.innerHTML = `
+        <div class="alert alert-danger">
+          ${escapeHtml(message)}
+          ${precheckSummaryHtml}
+          ${groupedIssuesHtml}
+        </div>
+      `;
+      showAlert(dashboardAlertId, message);
+      showToast(message, "danger");
     } finally {
       generateBtn.disabled = false;
       generateBtn.textContent = "Generate Timetable";

@@ -47,6 +47,86 @@ function asNonNegativeInt(value, fallback) {
   return fallback;
 }
 
+function parseIdArray(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(value.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+      }
+    } catch (err) {
+      return [...new Set(value.split(",").map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0))];
+    }
+  }
+
+  return [];
+}
+
+async function validateFacultyUsersForSubject(client, facultyUserIds, departmentId) {
+  const normalizedIds = [...new Set(facultyUserIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+  if (!normalizedIds.length) {
+    return { ok: false, message: "Assign at least one faculty to this subject" };
+  }
+
+  const facultyResult = await client.query(
+    `SELECT id, full_name
+     FROM faculty_users
+     WHERE id = ANY($1::int[])
+       AND LOWER(role) = 'faculty'`,
+    [normalizedIds]
+  );
+  if (facultyResult.rowCount !== normalizedIds.length) {
+    return { ok: false, message: "One or more selected faculty members are invalid" };
+  }
+
+  const departmentResult = await client.query(
+    `SELECT DISTINCT faculty_user_id
+     FROM faculty_departments
+     WHERE department_id = $1
+       AND faculty_user_id = ANY($2::int[])`,
+    [departmentId, normalizedIds]
+  );
+
+  if (departmentResult.rowCount !== normalizedIds.length) {
+    const linked = new Set(departmentResult.rows.map((row) => Number(row.faculty_user_id)));
+    const missing = facultyResult.rows
+      .filter((row) => !linked.has(Number(row.id)))
+      .map((row) => row.full_name);
+    return {
+      ok: false,
+      message: `Selected faculty must be assigned to the selected department${missing.length ? `: ${missing.join(", ")}` : ""}`,
+    };
+  }
+
+  return { ok: true, ids: normalizedIds };
+}
+
+async function syncSubjectFacultyMappings(client, subjectId, facultyUserIds) {
+  const normalizedIds = [...new Set(facultyUserIds.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+  if (!normalizedIds.length) {
+    return;
+  }
+
+  await client.query(
+    `DELETE FROM faculty_subjects
+     WHERE subject_id = $1
+       AND faculty_user_id IS NOT NULL
+       AND NOT (faculty_user_id = ANY($2::int[]))`,
+    [subjectId, normalizedIds]
+  );
+
+  await client.query(
+    `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
+     SELECT UNNEST($1::int[]), $2
+     ON CONFLICT (faculty_user_id, subject_id) WHERE faculty_user_id IS NOT NULL DO NOTHING`,
+    [normalizedIds, subjectId]
+  );
+}
+
 function normalizeProgramType(value) {
   return String(value || "UG").trim().toUpperCase() === "PG" ? "PG" : "UG";
 }
@@ -1484,12 +1564,22 @@ router.get("/subjects", authRequired, async (req, res, next) => {
                s.created_at,
                d.department_name,
                b.branch_name,
-               sem.semester_number, sem.academic_year
+               sem.semester_number, sem.academic_year,
+               COALESCE(subject_faculty.faculty_user_ids, ARRAY[]::INTEGER[]) AS faculty_user_ids,
+               COALESCE(subject_faculty.faculty_names, '-') AS faculty_names
         FROM subjects s
         JOIN departments d ON d.id = s.department_id
         JOIN branches b ON b.id = s.branch_id
         JOIN semesters sem ON sem.id = s.semester_id
         LEFT JOIN semester_durations sd ON sd.semester_id = s.semester_id
+        LEFT JOIN LATERAL (
+          SELECT ARRAY_REMOVE(ARRAY_AGG(DISTINCT fs.faculty_user_id), NULL) AS faculty_user_ids,
+                 STRING_AGG(DISTINCT COALESCE(fu.full_name, f.full_name), ', ') AS faculty_names
+          FROM faculty_subjects fs
+          LEFT JOIN faculty_users fu ON fu.id = fs.faculty_user_id
+          LEFT JOIN faculty f ON f.id = fs.faculty_id
+          WHERE fs.subject_id = s.id
+        ) subject_faculty ON TRUE
         WHERE ($1 = '' OR s.subject_name ILIKE $1 OR s.subject_code ILIKE $1 OR d.department_name ILIKE $1 OR b.branch_name ILIKE $1)
         ORDER BY s.id DESC
         LIMIT $2 OFFSET $3
@@ -1513,6 +1603,8 @@ router.get("/subjects", authRequired, async (req, res, next) => {
 });
 
 router.post("/subjects", authRequired, async (req, res, next) => {
+  const client = await pool.connect();
+
   try {
     if (!ensureAdmin(req, res)) return;
 
@@ -1525,12 +1617,19 @@ router.post("/subjects", authRequired, async (req, res, next) => {
     const totalHours = asNonNegativeInt(req.body.total_hours ?? req.body.total_hours_semester, -1);
     const rawTheoryHours = parseOptionalNonNegativeInt(req.body.theory_hours ?? req.body.theory_hours_per_week);
     const rawPracticalHours = parseOptionalNonNegativeInt(req.body.practical_hours ?? req.body.practical_hours_per_week);
+    const facultyUserIds = parseIdArray(req.body.faculty_user_ids ?? req.body.faculty_ids ?? req.body.faculty_user_id);
 
     if (!subjectName || !subjectCode || !departmentId || !branchId || !semesterId || !normalizedSubjectType) {
       return res.status(400).json({
         message: "Subject name, code, department, branch, semester and type are required",
       });
     }
+
+    if (!facultyUserIds.length) {
+      return res.status(400).json({ message: "Assign at least one faculty before saving subject" });
+    }
+
+    await client.query("BEGIN");
 
     const hourConfig = buildSubjectHourConfig({
       normalizedSubjectType,
@@ -1539,39 +1638,43 @@ router.post("/subjects", authRequired, async (req, res, next) => {
       rawPracticalHours,
     });
     if (hourConfig.error) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: hourConfig.error });
     }
 
-    const branch = await pool.query(
+    const branch = await client.query(
       `SELECT id, department_id
        FROM branches
        WHERE id = $1`,
       [branchId]
     );
     if (branch.rowCount === 0 || Number(branch.rows[0].department_id) !== departmentId) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Selected branch does not belong to selected department" });
     }
 
-    const semester = await pool.query(
+    const semester = await client.query(
       `SELECT id, branch_id
        FROM semesters
        WHERE id = $1`,
       [semesterId]
     );
     if (semester.rowCount === 0 || Number(semester.rows[0].branch_id) !== branchId) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Selected semester does not belong to selected branch" });
     }
 
     if (hourConfig.requiresLab) {
       const hasLabCapacity = await ensureLabAvailabilityForPractical(departmentId);
       if (!hasLabCapacity) {
+        await client.query("ROLLBACK");
         return res.status(400).json({
           message: "Practical subjects require at least one configured lab room or laboratory",
         });
       }
     }
 
-    const duplicateCode = await pool.query(
+    const duplicateCode = await client.query(
       `SELECT id
        FROM subjects
        WHERE branch_id = $1
@@ -1580,10 +1683,17 @@ router.post("/subjects", authRequired, async (req, res, next) => {
       [branchId, subjectCode]
     );
     if (duplicateCode.rowCount > 0) {
+      await client.query("ROLLBACK");
       return res.status(409).json({ message: "Subject code already exists in this branch" });
     }
 
-    const inserted = await pool.query(
+    const facultyValidation = await validateFacultyUsersForSubject(client, facultyUserIds, departmentId);
+    if (!facultyValidation.ok) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: facultyValidation.message });
+    }
+
+    const inserted = await client.query(
       `INSERT INTO subjects
       (subject_name, subject_code, department_id, branch_id, semester_id, subject_type,
        total_hours, theory_hours, practical_hours, requires_lab,
@@ -1607,9 +1717,23 @@ router.post("/subjects", authRequired, async (req, res, next) => {
       ]
     );
 
+    await syncSubjectFacultyMappings(client, inserted.rows[0].id, facultyValidation.ids);
+    await client.query("COMMIT");
+
     await logActivity(req.user.userId, "Subject Added", `subject=${subjectName}`);
-    return res.status(201).json({ message: "Subject added successfully", data: inserted.rows[0] });
+    return res.status(201).json({
+      message: "Subject added successfully",
+      data: {
+        ...inserted.rows[0],
+        faculty_user_ids: facultyValidation.ids,
+      },
+    });
   } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackErr) {
+      // ignore rollback errors
+    }
     if (err.code === "23505") {
       return res.status(409).json({ message: "Subject code already exists in this branch" });
     }
@@ -1617,10 +1741,14 @@ router.post("/subjects", authRequired, async (req, res, next) => {
       return res.status(400).json({ message: "Invalid department, branch or semester selected" });
     }
     return next(err);
+  } finally {
+    client.release();
   }
 });
 
 router.put("/subjects/:id", authRequired, async (req, res, next) => {
+  const client = await pool.connect();
+
   try {
     if (!ensureAdmin(req, res)) return;
 
@@ -1634,6 +1762,11 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
     const totalHours = asNonNegativeInt(req.body.total_hours ?? req.body.total_hours_semester, -1);
     const rawTheoryHours = parseOptionalNonNegativeInt(req.body.theory_hours ?? req.body.theory_hours_per_week);
     const rawPracticalHours = parseOptionalNonNegativeInt(req.body.practical_hours ?? req.body.practical_hours_per_week);
+    const hasFacultyMappingField =
+      Object.prototype.hasOwnProperty.call(req.body, "faculty_user_ids") ||
+      Object.prototype.hasOwnProperty.call(req.body, "faculty_ids") ||
+      Object.prototype.hasOwnProperty.call(req.body, "faculty_user_id");
+    const facultyUserIds = parseIdArray(req.body.faculty_user_ids ?? req.body.faculty_ids ?? req.body.faculty_user_id);
 
     if (!subjectId) {
       return res.status(400).json({ message: "Invalid subject id" });
@@ -1645,13 +1778,20 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       });
     }
 
-    const existing = await pool.query(
+    if (hasFacultyMappingField && !facultyUserIds.length) {
+      return res.status(400).json({ message: "Assign at least one faculty before saving subject" });
+    }
+
+    await client.query("BEGIN");
+
+    const existing = await client.query(
       `SELECT id
        FROM subjects
        WHERE id = $1`,
       [subjectId]
     );
     if (existing.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ message: "Subject not found" });
     }
 
@@ -1662,39 +1802,43 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       rawPracticalHours,
     });
     if (hourConfig.error) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: hourConfig.error });
     }
 
-    const branch = await pool.query(
+    const branch = await client.query(
       `SELECT id, department_id
        FROM branches
        WHERE id = $1`,
       [branchId]
     );
     if (branch.rowCount === 0 || Number(branch.rows[0].department_id) !== departmentId) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Selected branch does not belong to selected department" });
     }
 
-    const semester = await pool.query(
+    const semester = await client.query(
       `SELECT id, branch_id
        FROM semesters
        WHERE id = $1`,
       [semesterId]
     );
     if (semester.rowCount === 0 || Number(semester.rows[0].branch_id) !== branchId) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Selected semester does not belong to selected branch" });
     }
 
     if (hourConfig.requiresLab) {
       const hasLabCapacity = await ensureLabAvailabilityForPractical(departmentId);
       if (!hasLabCapacity) {
+        await client.query("ROLLBACK");
         return res.status(400).json({
           message: "Practical subjects require at least one configured lab room or laboratory",
         });
       }
     }
 
-    const duplicateCode = await pool.query(
+    const duplicateCode = await client.query(
       `SELECT id
        FROM subjects
        WHERE id <> $1
@@ -1704,10 +1848,21 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       [subjectId, branchId, subjectCode]
     );
     if (duplicateCode.rowCount > 0) {
+      await client.query("ROLLBACK");
       return res.status(409).json({ message: "Subject code already exists in this branch" });
     }
 
-    const updated = await pool.query(
+    let validatedFacultyUserIds = null;
+    if (hasFacultyMappingField) {
+      const validation = await validateFacultyUsersForSubject(client, facultyUserIds, departmentId);
+      if (!validation.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: validation.message });
+      }
+      validatedFacultyUserIds = validation.ids;
+    }
+
+    const updated = await client.query(
       `UPDATE subjects
        SET subject_name = $1,
            subject_code = $2,
@@ -1742,9 +1897,37 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       ]
     );
 
+    if (validatedFacultyUserIds) {
+      await syncSubjectFacultyMappings(client, subjectId, validatedFacultyUserIds);
+    }
+
+    const mappingCountResult = await client.query(
+      `SELECT COUNT(*)::int AS total
+       FROM faculty_subjects
+       WHERE subject_id = $1`,
+      [subjectId]
+    );
+    if (Number(mappingCountResult.rows[0]?.total || 0) <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Assign at least one faculty before saving subject" });
+    }
+
+    await client.query("COMMIT");
+
     await logActivity(req.user.userId, "Subject Updated", `subject=${subjectName}, id=${subjectId}`);
-    return res.json({ message: "Updated successfully", data: updated.rows[0] });
+    return res.json({
+      message: "Updated successfully",
+      data: {
+        ...updated.rows[0],
+        ...(validatedFacultyUserIds ? { faculty_user_ids: validatedFacultyUserIds } : {}),
+      },
+    });
   } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackErr) {
+      // ignore rollback errors
+    }
     if (err.code === "23505") {
       return res.status(409).json({ message: "Subject code already exists in this branch" });
     }
@@ -1752,6 +1935,8 @@ router.put("/subjects/:id", authRequired, async (req, res, next) => {
       return res.status(400).json({ message: "Invalid department, branch or semester selected" });
     }
     return next(err);
+  } finally {
+    client.release();
   }
 });
 

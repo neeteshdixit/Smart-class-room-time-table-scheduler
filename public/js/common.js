@@ -81,6 +81,7 @@ async function apiRequest(endpoint, options = {}) {
       const message = data.message || "Request failed";
       const error = new Error(message);
       error.validationErrors = Array.isArray(data.errors) ? data.errors : [];
+      error.responseData = data;
       error.status = response.status;
       throw error;
     } catch (error) {
