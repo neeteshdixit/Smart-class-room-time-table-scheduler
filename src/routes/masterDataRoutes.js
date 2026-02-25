@@ -122,9 +122,6 @@ const resourceConfig = {
       "department_id",
       "start_time",
       "end_time",
-      "slot_duration_minutes",
-      "break_duration_minutes",
-      "working_days",
     ],
   },
   "semester-durations": {

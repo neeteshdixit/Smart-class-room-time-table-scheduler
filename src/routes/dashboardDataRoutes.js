@@ -4,6 +4,8 @@ const { authRequired } = require("../middleware/auth");
 const { logActivity } = require("../utils/activity");
 
 const router = express.Router();
+const DEFAULT_SLOT_DURATION_MINUTES = 50;
+const DEFAULT_WORKING_DAYS = "Mon-Fri";
 
 function isAdminRole(role) {
   return String(role || "").toLowerCase() === "admin";
@@ -170,6 +172,24 @@ function validateDepartmentScheduleWindow({
 
 function isForeignKeyViolation(err) {
   return err?.code === "23503";
+}
+
+async function resolveDefaultSlotDurationMinutes() {
+  try {
+    const result = await pool.query(
+      `SELECT class_duration_minutes
+       FROM scheduling_parameters
+       ORDER BY id DESC
+       LIMIT 1`
+    );
+    const configured = asPositiveInt(result.rows[0]?.class_duration_minutes, 0);
+    if (configured > 0) {
+      return configured;
+    }
+  } catch (err) {
+    // Fall back to static default when scheduling parameters table is unavailable.
+  }
+  return DEFAULT_SLOT_DURATION_MINUTES;
 }
 
 async function listWithPagination({ page, limit, querySql, queryValues, countSql, countValues }) {
@@ -502,7 +522,7 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
     const departmentId = asPositiveInt(req.body.department_id, 0);
     const startTime = normalizeTimeValue(req.body.start_time);
     const endTime = normalizeTimeValue(req.body.end_time);
-    const slotDurationMinutes = asPositiveInt(req.body.slot_duration_minutes, 0);
+    let slotDurationMinutes = asPositiveInt(req.body.slot_duration_minutes, 0);
     const rawBreakDuration =
       req.body.break_duration_minutes === undefined || req.body.break_duration_minutes === null
         ? 0
@@ -513,7 +533,11 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
       breakAfterSlotNumberRaw === undefined || breakAfterSlotNumberRaw === null || breakAfterSlotNumberRaw === ""
         ? null
         : asPositiveInt(breakAfterSlotNumberRaw, 0);
-    const workingDays = normalizeWorkingDays(req.body.working_days);
+    const workingDays = normalizeWorkingDays(req.body.working_days) || DEFAULT_WORKING_DAYS;
+
+    if (!slotDurationMinutes) {
+      slotDurationMinutes = await resolveDefaultSlotDurationMinutes();
+    }
 
     if (
       !departmentId ||
@@ -524,7 +548,7 @@ router.post("/department-schedule-config", authRequired, async (req, res, next) 
       (!workingDays)
     ) {
       return res.status(400).json({
-        message: "Department, start time, end time, slot duration, break duration and working days are required",
+        message: "Department, start time and end time are required",
       });
     }
 
@@ -632,12 +656,13 @@ router.put("/department-schedule-config/:id", authRequired, async (req, res, nex
           ? null
           : asPositiveInt(req.body.break_after_slot_number, 0);
     const workingDays =
-      req.body.working_days === undefined ? normalizeWorkingDays(current.working_days) : normalizeWorkingDays(req.body.working_days);
+      req.body.working_days === undefined
+        ? normalizeWorkingDays(current.working_days) || DEFAULT_WORKING_DAYS
+        : normalizeWorkingDays(req.body.working_days) || DEFAULT_WORKING_DAYS;
 
     if (!departmentId || !startTime || !endTime || !slotDurationMinutes || breakDurationMinutes < 0 || !workingDays) {
       return res.status(400).json({
-        message:
-          "Department, start time, end time, slot duration, break duration and working days are required",
+        message: "Department, start time and end time are required",
       });
     }
 

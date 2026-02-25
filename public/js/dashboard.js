@@ -123,44 +123,13 @@ const entityConfig = {
       { name: "department_id", label: "Department", type: "select", optionsKey: "departments", required: true },
       { name: "start_time", label: "Start Time", type: "time", required: true },
       { name: "end_time", label: "End Time", type: "time", required: true },
-      { name: "slot_duration_minutes", label: "Slot Duration (min)", type: "number", required: true, min: 1 },
-      {
-        name: "working_days",
-        label: "Working Days",
-        type: "select",
-        required: true,
-        staticOptions: [
-          { value: "Mon-Fri", label: "Mon-Fri" },
-          { value: "Mon-Sat", label: "Mon-Sat" },
-        ],
-      },
-      { name: "break_duration_minutes", label: "Break Duration (min)", type: "number", required: true, min: 0 },
-      {
-        name: "break_after_slot_number",
-        label: "Break After Slot #",
-        type: "number",
-        min: 1,
-      },
     ],
-    columns: [
-      "ID",
-      "Department",
-      "Start",
-      "End",
-      "Slot Min",
-      "Break Min",
-      "Break After Slot",
-      "Days",
-    ],
+    columns: ["ID", "Department", "Start", "End"],
     mapRow: (row) => [
       row.id,
       row.department_name,
       formatClockTime(row.start_time),
       formatClockTime(row.end_time),
-      row.slot_duration_minutes,
-      row.break_duration_minutes,
-      row.break_after_slot_number ?? "-",
-      row.working_days,
     ],
   },
   branches: {
@@ -972,13 +941,6 @@ function renderForm(resourceKey, optionsByKey) {
     yearInput.value = `${year}-${String((year + 1) % 100).padStart(2, "0")}`;
   }
 
-  if (resourceKey === "department_schedule_config") {
-    const breakDurationInput = entityFormBody.querySelector('input[name="break_duration_minutes"]');
-    if (breakDurationInput && !breakDurationInput.value) {
-      breakDurationInput.value = "0";
-    }
-  }
-
   const submitBtn = document.getElementById("entitySubmitBtn");
   if (submitBtn) {
     submitBtn.textContent = state.currentFormMode === "edit" ? "Update" : "Save";
@@ -1072,12 +1034,7 @@ function normalizePayload(resourceKey, payload) {
   const converted = { ...payload };
 
   const toIntKeys = {
-    department_schedule_config: [
-      "department_id",
-      "slot_duration_minutes",
-      "break_duration_minutes",
-      "break_after_slot_number",
-    ],
+    department_schedule_config: ["department_id"],
     branches: ["department_id"],
     sections: ["branch_id", "semester_id"],
     blocks: ["number_of_floors"],
@@ -1104,10 +1061,6 @@ function normalizePayload(resourceKey, payload) {
       delete converted.theory_hours;
       delete converted.practical_hours;
     }
-  }
-
-  if (resourceKey === "department_schedule_config" && !String(converted.break_after_slot_number || "").trim()) {
-    delete converted.break_after_slot_number;
   }
 
   return converted;
