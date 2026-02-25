@@ -723,43 +723,47 @@ async function generateTimetableHandler(req, res, next) {
     }
 
     const departmentId = Number(semesterMetaResult.rows[0].department_id);
-    const [departmentScheduleResult, semesterDurationResult, sectionsResult, subjectsResult, roomsResult] =
-      await Promise.all([
-        client.query(
-          `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_duration_minutes,
-                  break_after_slot_number, working_days
-           FROM department_schedule_config
-           WHERE department_id = $1
-           LIMIT 1`,
-          [departmentId]
-        ),
-        client.query(
-          `SELECT start_date, end_date
-           FROM semester_durations
-           WHERE semester_id = $1
-           LIMIT 1`,
-          [semesterId]
-        ),
-        client.query(
-          `SELECT id, section_name, student_strength
-           FROM sections
-           WHERE semester_id = $1
-           ORDER BY section_name, id`,
-          [semesterId]
-        ),
-        client.query(
-          `SELECT id, subject_name, subject_type, total_hours, theory_hours, practical_hours, requires_lab
-           FROM subjects
-           WHERE semester_id = $1
-           ORDER BY subject_name, id`,
-          [semesterId]
-        ),
-        client.query(
-          `SELECT id, room_number, room_type, capacity
-           FROM classrooms
-           ORDER BY room_number, id`
-        ),
-      ]);
+    // Run these queries sequentially on the same client while a transaction
+    // is active. Running multiple client queries in parallel can cause a
+    // transaction to become aborted if one of them fails.
+    const departmentScheduleResult = await client.query(
+      `SELECT id, department_id, start_time, end_time, slot_duration_minutes, break_duration_minutes,
+              break_after_slot_number, working_days
+       FROM department_schedule_config
+       WHERE department_id = $1
+       LIMIT 1`,
+      [departmentId]
+    );
+
+    const semesterDurationResult = await client.query(
+      `SELECT start_date, end_date
+       FROM semester_durations
+       WHERE semester_id = $1
+       LIMIT 1`,
+      [semesterId]
+    );
+
+    const sectionsResult = await client.query(
+      `SELECT id, section_name, student_strength
+       FROM sections
+       WHERE semester_id = $1
+       ORDER BY section_name, id`,
+      [semesterId]
+    );
+
+    const subjectsResult = await client.query(
+      `SELECT id, subject_name, subject_type, total_hours, theory_hours, practical_hours, requires_lab
+       FROM subjects
+       WHERE semester_id = $1
+       ORDER BY subject_name, id`,
+      [semesterId]
+    );
+
+    const roomsResult = await client.query(
+      `SELECT id, room_number, room_type, capacity
+       FROM classrooms
+       ORDER BY room_number, id`
+    );
 
     if (departmentScheduleResult.rowCount > 0) {
       precheckStatus.departments_configured = true;
@@ -791,7 +795,15 @@ async function generateTimetableHandler(req, res, next) {
     let slots = [];
     if (departmentScheduleResult.rowCount > 0) {
       try {
-        slots = await ensureDepartmentTimeSlots(client, departmentId, departmentScheduleResult.rows[0]);
+        // Use a dedicated client for slot generation/upsert so any SQL errors
+        // won't pollute the main transaction client.
+        const slotClient = await pool.connect();
+        try {
+          slots = await ensureDepartmentTimeSlots(slotClient, departmentId, departmentScheduleResult.rows[0]);
+        } finally {
+          slotClient.release();
+        }
+
         if (slots.length > 0) {
           precheckStatus.slots_generated = true;
         } else {
@@ -802,7 +814,14 @@ async function generateTimetableHandler(req, res, next) {
       }
     }
 
-    await ensureFacultyDirectoryRowsForSemesterMappings(client, semesterId);
+    // Populate faculty directory using a dedicated client so any errors do
+    // not affect the main transaction client.
+    const facultyClient = await pool.connect();
+    try {
+      await ensureFacultyDirectoryRowsForSemesterMappings(facultyClient, semesterId);
+    } finally {
+      facultyClient.release();
+    }
 
     const facultyUserMappingEnabled = await tableHasColumn(client, "faculty_subjects", "faculty_user_id");
     const hasFacultyUsersTable = facultyUserMappingEnabled ? await tableExists(client, "faculty_users") : false;
