@@ -978,6 +978,18 @@ function renderForm(resourceKey, optionsByKey) {
     yearInput.value = `${year}-${String((year + 1) % 100).padStart(2, "0")}`;
   }
 
+  if (resourceKey === "department_schedule_config" && state.currentFormMode === "create") {
+    const slotDurationInput = entityFormBody.querySelector('input[name="slot_duration_minutes"]');
+    const breakDurationInput = entityFormBody.querySelector('input[name="break_duration_minutes"]');
+    const breakAfterInput = entityFormBody.querySelector('input[name="break_after_slot_number"]');
+    const workingDaysSelect = entityFormBody.querySelector('select[name="working_days"]');
+
+    if (slotDurationInput && !slotDurationInput.value) slotDurationInput.value = "50";
+    if (breakDurationInput && !breakDurationInput.value) breakDurationInput.value = "30";
+    if (breakAfterInput && !breakAfterInput.value) breakAfterInput.value = "4";
+    if (workingDaysSelect && !workingDaysSelect.value) workingDaysSelect.value = "Mon-Fri";
+  }
+
   const submitBtn = document.getElementById("entitySubmitBtn");
   if (submitBtn) {
     submitBtn.textContent = state.currentFormMode === "edit" ? "Update" : "Save";
@@ -1027,8 +1039,36 @@ function applySubjectTypeFieldVisibility() {
   }
 }
 
+function applyDepartmentScheduleBreakFieldVisibility() {
+  if (!entityFormBody) return;
+
+  const breakDurationInput = entityFormBody.querySelector('input[name="break_duration_minutes"]');
+  const breakAfterContainer = entityFormBody.querySelector('[data-field-container="break_after_slot_number"]');
+  const breakAfterInput = entityFormBody.querySelector('input[name="break_after_slot_number"]');
+
+  if (!breakDurationInput || !breakAfterInput || !breakAfterContainer) return;
+
+  const breakDuration = Number(breakDurationInput.value || 0);
+  const hasBreak = Number.isFinite(breakDuration) && breakDuration > 0;
+  breakAfterContainer.classList.toggle("d-none", !hasBreak);
+  breakAfterInput.required = hasBreak;
+
+  if (!hasBreak && state.currentFormMode === "create") {
+    breakAfterInput.value = "";
+  }
+}
+
 function bindDependentFormFilters(resourceKey) {
   if (!entityFormBody) return;
+  if (resourceKey === "department_schedule_config") {
+    const breakDurationInput = entityFormBody.querySelector('input[name="break_duration_minutes"]');
+    if (breakDurationInput) {
+      breakDurationInput.addEventListener("input", applyDepartmentScheduleBreakFieldVisibility);
+    }
+    applyDepartmentScheduleBreakFieldVisibility();
+    return;
+  }
+
   if (resourceKey === "sections") {
     const branchSelect = entityFormBody.querySelector('select[name="branch_id"]');
     const semesterSelectEl = entityFormBody.querySelector('select[name="semester_id"]');
@@ -1085,7 +1125,12 @@ function normalizePayload(resourceKey, payload) {
   const converted = { ...payload };
 
   const toIntKeys = {
-    department_schedule_config: ["department_id"],
+    department_schedule_config: [
+      "department_id",
+      "slot_duration_minutes",
+      "break_duration_minutes",
+      "break_after_slot_number",
+    ],
     branches: ["department_id"],
     sections: ["branch_id", "semester_id"],
     blocks: ["number_of_floors"],
