@@ -79,21 +79,42 @@ function minutesToSqlTime(minutes) {
 }
 
 function resolveWorkingDays(workingDays) {
-  if (String(workingDays || "").trim() === "Mon-Sat") {
+  if (Array.isArray(workingDays)) {
+    const normalizedArray = [...new Set(workingDays.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 1 && item <= 7))].sort(
+      (a, b) => a - b
+    );
+    if (normalizedArray.length > 0) {
+      return normalizedArray;
+    }
+  }
+
+  const raw = String(workingDays || "").trim();
+  const normalized = raw.toLowerCase();
+  if (normalized === "mon-sun" || normalized === "monday-sunday") {
+    return [1, 2, 3, 4, 5, 6, 7];
+  }
+  if (normalized === "mon-sat" || normalized === "monday-saturday") {
     return [1, 2, 3, 4, 5, 6];
   }
+  if (normalized === "mon-fri" || normalized === "monday-friday") {
+    return [1, 2, 3, 4, 5];
+  }
+
+  const parsedCount = Number(raw);
+  if (Number.isInteger(parsedCount) && parsedCount >= 1 && parsedCount <= 7) {
+    return Array.from({ length: parsedCount }, (_, index) => index + 1);
+  }
+
   return [1, 2, 3, 4, 5];
 }
 
-function computeWeeklySessions(totalHours, totalWeeks, slotDurationMinutes) {
+function computeWeeklySessions(totalHours, _totalWeeks, slotDurationMinutes) {
   const safeTotalHours = asNonNegativeInteger(totalHours, 0);
-  const safeTotalWeeks = Math.max(1, asNonNegativeInteger(totalWeeks, DEFAULT_SEMESTER_WEEKS));
   const safeSlotDuration = Math.max(1, asNonNegativeInteger(slotDurationMinutes, 0));
   if (safeTotalHours === 0) return 0;
 
-  const weeklyHours = safeTotalHours / safeTotalWeeks;
-  const weeklyMinutes = weeklyHours * 60;
-  return Math.max(1, Math.ceil(weeklyMinutes / safeSlotDuration));
+  const totalMinutes = safeTotalHours * 60;
+  return Math.max(1, Math.ceil(totalMinutes / safeSlotDuration));
 }
 
 function resolveSubjectHourBreakdown(subject) {
@@ -146,6 +167,11 @@ function getSessionDemands(subject, totalWeeks, slotDurationMinutes) {
     { count: computeWeeklySessions(subjectHours.theoryHours, totalWeeks, slotDurationMinutes), mode: "Theory" },
     { count: computeWeeklySessions(subjectHours.practicalHours, totalWeeks, slotDurationMinutes), mode: "Practical" },
   ].filter((item) => item.count > 0);
+}
+
+function requiresLabRoom(subject) {
+  const type = normalizeSubjectType(subject.subject_type);
+  return Boolean(subject.requires_lab) || type === "Practical" || type === "Theory + Practical";
 }
 
 async function tableHasColumn(queryable, tableName, columnName, schema = "public") {
@@ -257,10 +283,10 @@ function buildDepartmentSlotTemplates(scheduleConfig) {
     if (remainingMinutes <= 0) {
       break;
     }
-    if (remainingMinutes < slotDurationMinutes) {
+    const slotLength = Math.min(slotDurationMinutes, remainingMinutes);
+    if (slotLength <= 0) {
       break;
     }
-    const slotLength = slotDurationMinutes;
     const slotEnd = cursor + slotLength;
 
     templates.push({
@@ -423,10 +449,10 @@ async function saveTimetablePdf({
 }
 
 const PRECHECK_LABELS = Object.freeze({
-  departments_configured: "Departments configured",
+  subjects_found: "Subjects found",
   faculty_mapped: "Faculty mapped",
-  rooms_available: "Rooms available",
-  slots_generated: "Slots generated",
+  labs_available: "Labs available",
+  seven_days_configured: "7 days configured",
 });
 
 const CONFLICT_REASON = Object.freeze({
@@ -456,6 +482,7 @@ const ISSUE_LABELS = Object.freeze({
   missing_department_assignment: "Missing Department Assignment",
   missing_workload_limit: "Missing Workload Limit",
   missing_working_hours: "Department Working Hours Not Configured",
+  working_days_not_seven: "7-Day Schedule Not Configured",
   no_classroom_available: "No Classroom Available",
   no_lab_available: "No Lab Available",
   no_sections: "No Sections Configured",
@@ -581,11 +608,17 @@ function resolveValidationFailureMessage(groups) {
   if (firstGroup.key === "missing_working_hours") {
     return "Department working hours are not configured.";
   }
+  if (firstGroup.key === "working_days_not_seven") {
+    return "Configure department schedule for 7 working days (Monday to Sunday).";
+  }
   if (firstGroup.key === "no_lab_available") {
     return "No lab room is configured for practical sessions.";
   }
   if (firstGroup.key === "no_classroom_available") {
     return "No lecture classroom is configured.";
+  }
+  if (firstGroup.key === "no_subjects") {
+    return "No subjects mapped to this branch for selected semester.";
   }
 
   return "Pre-generation validation failed. Fix missing setup data and retry.";
@@ -700,10 +733,10 @@ async function generateTimetableHandler(req, res, next) {
     await client.query("BEGIN");
 
     const precheckStatus = {
-      departments_configured: false,
+      subjects_found: false,
       faculty_mapped: false,
-      rooms_available: false,
-      slots_generated: false,
+      labs_available: false,
+      seven_days_configured: false,
     };
     const issues = createIssueBuckets();
 
@@ -722,6 +755,7 @@ async function generateTimetableHandler(req, res, next) {
       });
     }
 
+    const branchId = Number(semesterMetaResult.rows[0].branch_id);
     const departmentId = Number(semesterMetaResult.rows[0].department_id);
     // Run these queries sequentially on the same client while a transaction
     // is active. Running multiple client queries in parallel can cause a
@@ -744,19 +778,24 @@ async function generateTimetableHandler(req, res, next) {
     );
 
     const sectionsResult = await client.query(
-      `SELECT id, section_name, student_strength
-       FROM sections
-       WHERE semester_id = $1
-       ORDER BY section_name, id`,
-      [semesterId]
+      `SELECT s.id, s.section_name, s.student_strength
+       FROM sections s
+       JOIN branches b ON b.id = s.branch_id
+       WHERE s.semester_id = $1
+         AND s.branch_id = $2
+         AND b.department_id = $3
+       ORDER BY s.section_name, s.id`,
+      [semesterId, branchId, departmentId]
     );
 
     const subjectsResult = await client.query(
       `SELECT id, subject_name, subject_type, total_hours, theory_hours, practical_hours, requires_lab
        FROM subjects
        WHERE semester_id = $1
+         AND branch_id = $2
+         AND department_id = $3
        ORDER BY subject_name, id`,
-      [semesterId]
+      [semesterId, branchId, departmentId]
     );
 
     const roomsResult = await client.query(
@@ -765,31 +804,44 @@ async function generateTimetableHandler(req, res, next) {
        ORDER BY room_number, id`
     );
 
-    if (departmentScheduleResult.rowCount > 0) {
-      precheckStatus.departments_configured = true;
-    } else {
+    const configuredWorkingDays =
+      departmentScheduleResult.rowCount > 0 ? resolveWorkingDays(departmentScheduleResult.rows[0].working_days) : [];
+
+    if (departmentScheduleResult.rowCount === 0) {
       addIssue(issues, "missing_working_hours", "Configure department schedule first");
+    } else if (configuredWorkingDays.length === 7) {
+      precheckStatus.seven_days_configured = true;
+    } else {
+      addIssue(
+        issues,
+        "working_days_not_seven",
+        `Current configuration has ${configuredWorkingDays.length} working day(s). Set working days to 7 (Monday to Sunday).`
+      );
     }
 
     if (sectionsResult.rowCount === 0) {
-      addIssue(issues, "no_sections", "No sections found for this semester");
+      addIssue(issues, "no_sections", "No sections mapped to this branch for selected semester");
     }
 
     if (subjectsResult.rowCount === 0) {
-      addIssue(issues, "no_subjects", "No subjects found for this semester");
+      addIssue(issues, "no_subjects", "No subjects mapped to this branch for selected semester.");
+    } else {
+      precheckStatus.subjects_found = true;
     }
 
     const lectureRooms = roomsResult.rows.filter((room) => String(room.room_type || "").toLowerCase() === "lecture");
     const labRooms = roomsResult.rows.filter((room) => String(room.room_type || "").toLowerCase() === "lab");
+    const hasTheorySessions = subjectsResult.rows.some((subject) => normalizeSubjectType(subject.subject_type) !== "Practical");
+    const hasPracticalSessions = subjectsResult.rows.some((subject) => requiresLabRoom(subject));
 
-    if (!lectureRooms.length) {
+    if (hasTheorySessions && !lectureRooms.length) {
       addIssue(issues, "no_classroom_available", "Add at least one classroom with room type 'Lecture'");
     }
-    if (!labRooms.length) {
+    if (hasPracticalSessions && !labRooms.length) {
       addIssue(issues, "no_lab_available", "Add at least one classroom with room type 'Lab'");
     }
-    if (lectureRooms.length > 0 && labRooms.length > 0) {
-      precheckStatus.rooms_available = true;
+    if (!hasPracticalSessions || labRooms.length > 0) {
+      precheckStatus.labs_available = true;
     }
 
     let slots = [];
@@ -805,8 +857,8 @@ async function generateTimetableHandler(req, res, next) {
         }
 
         if (slots.length > 0) {
-          precheckStatus.slots_generated = true;
-        } else {
+          // no-op: slot generation status is reflected through validation issues
+        } else if (!issues.slot_generation_failed.size) {
           addIssue(issues, "slot_generation_failed", "No valid slots generated from department schedule");
         }
       } catch (scheduleErr) {
@@ -850,7 +902,9 @@ async function generateTimetableHandler(req, res, next) {
            LEFT JOIN faculty f_by_mobile
              ON fu.mobile_number IS NOT NULL
             AND f_by_mobile.mobile_number = fu.mobile_number
-           WHERE s.semester_id = $1`
+           WHERE s.semester_id = $1
+             AND s.branch_id = $2
+             AND s.department_id = $3`
         : `SELECT fs.subject_id,
                   s.subject_name,
                   fs.faculty_id AS mapped_faculty_id,
@@ -860,11 +914,13 @@ async function generateTimetableHandler(req, res, next) {
                   f.full_name AS faculty_name,
                   f.max_workload_per_week,
                   f.department_id AS faculty_department_id
-           FROM faculty_subjects fs
-           JOIN subjects s ON s.id = fs.subject_id
-           LEFT JOIN faculty f ON f.id = fs.faculty_id
-           WHERE s.semester_id = $1`,
-      [semesterId]
+            FROM faculty_subjects fs
+            JOIN subjects s ON s.id = fs.subject_id
+            LEFT JOIN faculty f ON f.id = fs.faculty_id
+           WHERE s.semester_id = $1
+             AND s.branch_id = $2
+             AND s.department_id = $3`,
+      [semesterId, branchId, departmentId]
     );
 
     const totalWeeks = calculateTotalWeeks(semesterDurationResult.rows[0]);
@@ -968,15 +1024,50 @@ async function generateTimetableHandler(req, res, next) {
     const entries = [];
     const conflicts = [];
     const conflictSummaryBuckets = createConflictSummaryBuckets();
+    const slotDurationById = new Map(
+      slots.map((slot) => {
+        const startMinutes = toTimeMinutes(slot.start_time);
+        const endMinutes = toTimeMinutes(slot.end_time);
+        const slotMinutes =
+          startMinutes === null || endMinutes === null ? slotDurationMinutes : Math.max(1, endMinutes - startMinutes);
+        return [Number(slot.id), slotMinutes];
+      })
+    );
+    const slotsByDay = new Map();
+    slots.forEach((slot) => {
+      const day = Number(slot.day_of_week);
+      if (!slotsByDay.has(day)) {
+        slotsByDay.set(day, []);
+      }
+      slotsByDay.get(day).push(slot);
+    });
+    const workingDaySequence = [...slotsByDay.keys()].sort((a, b) => a - b);
+
+    function orderedSlotsForPreferredDay(preferredDay) {
+      const preferred = Number(preferredDay);
+      if (!Number.isInteger(preferred) || !slotsByDay.has(preferred)) {
+        return slots;
+      }
+
+      const ordered = [...slotsByDay.get(preferred)];
+      for (const day of workingDaySequence) {
+        if (day === preferred) continue;
+        ordered.push(...slotsByDay.get(day));
+      }
+      return ordered;
+    }
 
     function roomCandidatesFor(mode, studentStrength) {
-      const sourceRooms = mode === "Practical" ? labRooms : lectureRooms;
       const requiredStrength = Number(studentStrength || 0);
-      const capacityMatched = sourceRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
-      if (capacityMatched.length > 0) {
-        return capacityMatched;
+      if (mode === "Practical") {
+        return labRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
       }
-      return sourceRooms;
+
+      const lectureCapacityMatched = lectureRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
+      if (lectureCapacityMatched.length > 0) {
+        return lectureCapacityMatched;
+      }
+      return lectureRooms;
     }
 
     function rankFacultyCandidates(candidates) {
@@ -992,7 +1083,7 @@ async function generateTimetableHandler(req, res, next) {
       });
     }
 
-    function tryAssign(section, subject, mode) {
+    function tryAssign(section, subject, mode, preferredDay) {
       const facultyCandidates = subjectFacultyMap.get(subject.id) || [];
       const rooms = roomCandidatesFor(mode, section.student_strength);
       const counters = {
@@ -1012,7 +1103,7 @@ async function generateTimetableHandler(req, res, next) {
         };
       }
 
-      for (const slot of slots) {
+      for (const slot of orderedSlotsForPreferredDay(preferredDay)) {
         const sectionSlotKey = `${section.id}-${slot.id}`;
         if (sectionSlotUsed.has(sectionSlotKey)) {
           counters[CONFLICT_REASON.SECTION_CLASH] += 1;
@@ -1059,6 +1150,7 @@ async function generateTimetableHandler(req, res, next) {
                 session_mode: mode,
                 day_of_week: slot.day_of_week,
                 slot_number: slot.slot_number,
+                slot_minutes: slotDurationById.get(Number(slot.id)) || slotDurationMinutes,
               },
             };
           }
@@ -1073,12 +1165,21 @@ async function generateTimetableHandler(req, res, next) {
       for (const subject of subjectsResult.rows) {
         const demands = getSessionDemands(subject, totalWeeks, slotDurationMinutes);
         for (const demand of demands) {
-          for (let i = 0; i < demand.count; i += 1) {
+          const demandCount = Math.max(0, asNonNegativeInteger(demand.count, 0));
+          const dayOffsetBase = workingDaySequence.length
+            ? (Number(section.id) * 31 + Number(subject.id) * 17 + (demand.mode === "Practical" ? 7 : 3)) %
+              workingDaySequence.length
+            : 0;
+          for (let i = 0; i < demandCount; i += 1) {
+            const preferredDay = workingDaySequence.length
+              ? workingDaySequence[(dayOffsetBase + i) % workingDaySequence.length]
+              : null;
             sessionRequests.push({
               section,
               subject,
               mode: demand.mode,
-              requested_per_week: demand.count,
+              requested_per_week: demandCount,
+              preferred_day: preferredDay,
             });
           }
         }
@@ -1100,11 +1201,14 @@ async function generateTimetableHandler(req, res, next) {
     });
 
     for (const request of sessionRequests) {
-      const assigned = tryAssign(request.section, request.subject, request.mode);
+      const assigned = tryAssign(request.section, request.subject, request.mode, request.preferred_day);
       if (assigned.success) {
         entries.push(assigned.entry);
       } else {
-        const reasonLabel = CONFLICT_REASON_LABELS[assigned.reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
+        const reasonLabel =
+          assigned.reason === CONFLICT_REASON.NO_LAB_AVAILABLE
+            ? `No lab available for subject ${request.subject.subject_name}`
+            : CONFLICT_REASON_LABELS[assigned.reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
         const summaryKey = conflictReasonToSummaryKey(assigned.reason);
         const conflictItem = `${request.section.section_name} - ${request.subject.subject_name}`;
         conflicts.push({
@@ -1119,6 +1223,66 @@ async function generateTimetableHandler(req, res, next) {
         });
         conflictSummaryBuckets[summaryKey].add(conflictItem);
       }
+    }
+
+    const assignedMinutesBySectionSubject = new Map();
+    entries.forEach((entry) => {
+      const key = `${entry.section_id}-${entry.subject_id}`;
+      const currentMinutes = assignedMinutesBySectionSubject.get(key) || 0;
+      assignedMinutesBySectionSubject.set(key, currentMinutes + asNonNegativeInteger(entry.slot_minutes, slotDurationMinutes));
+    });
+
+    const incompleteSubjects = [];
+    for (const section of sectionsResult.rows) {
+      for (const subject of subjectsResult.rows) {
+        const subjectHours = resolveSubjectHourBreakdown(subject);
+        const requiredMinutes = asNonNegativeInteger(subjectHours.totalHours, 0) * 60;
+        if (requiredMinutes <= 0) continue;
+
+        const key = `${section.id}-${subject.id}`;
+        const assignedMinutes = assignedMinutesBySectionSubject.get(key) || 0;
+        if (assignedMinutes >= requiredMinutes) continue;
+
+        const conflictItem = `${section.section_name} - ${subject.subject_name}`;
+        const missingMinutes = requiredMinutes - assignedMinutes;
+        incompleteSubjects.push({
+          section_id: section.id,
+          section_name: section.section_name,
+          subject_id: subject.id,
+          subject_name: subject.subject_name,
+          required_minutes: requiredMinutes,
+          assigned_minutes: assignedMinutes,
+          missing_minutes: missingMinutes,
+        });
+
+        conflictSummaryBuckets.no_slot_available.add(conflictItem);
+        conflicts.push({
+          section_id: section.id,
+          section_name: section.section_name,
+          subject_id: subject.id,
+          subject_name: subject.subject_name,
+          mode: "All",
+          requested_per_week: Math.ceil(requiredMinutes / Math.max(1, slotDurationMinutes)),
+          reason: `Unable to schedule full required hours for subject ${subject.subject_name}`,
+          reason_key: "incomplete_subject_hours",
+        });
+      }
+    }
+
+    if (incompleteSubjects.length > 0) {
+      const firstIncomplete = incompleteSubjects[0];
+      const conflictSummary = buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS);
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: `Unable to schedule full required hours for subject ${firstIncomplete.subject_name}`,
+        precheck_summary: buildPrecheckSummary(precheckStatus),
+        assigned_entries: entries.length,
+        conflicts_count: conflicts.length,
+        conflicts,
+        incomplete_subjects: incompleteSubjects,
+        conflict_summary: conflictSummary,
+        errors: flattenGroupItems(conflictSummary),
+      });
     }
 
     if (entries.length === 0) {

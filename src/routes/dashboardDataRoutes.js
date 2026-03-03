@@ -147,8 +147,15 @@ function isValidSubjectType(value) {
 
 function normalizeWorkingDays(value) {
   const raw = String(value || "").trim();
-  if (raw === "Mon-Fri" || raw === "Mon-Sat") {
-    return raw;
+  const normalized = raw.toLowerCase();
+  if (normalized === "mon-fri" || normalized === "monday-friday" || normalized === "5") {
+    return "Mon-Fri";
+  }
+  if (normalized === "mon-sat" || normalized === "monday-saturday" || normalized === "6") {
+    return "Mon-Sat";
+  }
+  if (normalized === "mon-sun" || normalized === "monday-sunday" || normalized === "7") {
+    return "Mon-Sun";
   }
   return "";
 }

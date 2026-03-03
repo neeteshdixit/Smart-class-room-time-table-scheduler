@@ -134,6 +134,7 @@ const entityConfig = {
         staticOptions: [
           { value: "Mon-Fri", label: "Mon-Fri" },
           { value: "Mon-Sat", label: "Mon-Sat" },
+          { value: "Mon-Sun", label: "Mon-Sun" },
         ],
       },
     ],
