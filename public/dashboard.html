@@ -102,8 +102,13 @@
                 <label class="form-label">Version Name</label>
                 <input type="text" class="form-control" name="version_name" placeholder="OddSem-2026-V1" required />
               </div>
-              <div class="col-md-4 d-grid">
-                <button id="generateBtn" type="submit" class="btn btn-warning">Generate Timetable</button>
+              <div class="col-md-4">
+                <div class="d-grid gap-2">
+                  <button id="generateBtn" type="submit" class="btn btn-warning">Generate Timetable</button>
+                  <button id="simulateBtn" type="submit" class="btn btn-outline-primary" data-simulate="true">
+                    Simulation Mode
+                  </button>
+                </div>
               </div>
             </form>
             <div class="mt-3" id="generationResult"></div>

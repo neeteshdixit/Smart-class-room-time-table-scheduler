@@ -1865,17 +1865,28 @@ function buildGroupedSummaryHtml(groups) {
 
 const generateForm = document.getElementById("generateTimetableForm");
 const generateBtn = document.getElementById("generateBtn");
+const simulateBtn = document.getElementById("simulateBtn");
 if (generateForm && generateBtn && generationResult) {
   generateForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     hideAlert(dashboardAlertId);
     generationResult.innerHTML = "";
 
+    const isSimulation = event.submitter?.dataset?.simulate === "true";
     const payload = Object.fromEntries(new FormData(generateForm).entries());
     payload.semester_id = Number(payload.semester_id);
+    if (isSimulation) {
+      payload.simulation_mode = true;
+    }
 
     generateBtn.disabled = true;
-    generateBtn.textContent = "Generating...";
+    if (simulateBtn) {
+      simulateBtn.disabled = true;
+    }
+    generateBtn.textContent = isSimulation ? "Running..." : "Generating...";
+    if (simulateBtn && isSimulation) {
+      simulateBtn.textContent = "Running Simulation...";
+    }
 
     try {
       const result = await withLoading(() =>
@@ -1890,11 +1901,17 @@ if (generateForm && generateBtn && generationResult) {
       const conflictSummaryHtml = buildGroupedSummaryHtml(result.conflict_summary);
 
       generationResult.innerHTML = `
-        <div class="alert alert-success">
-          Timetable generated. Assigned entries: <strong>${escapeHtml(result.assigned_entries)}</strong>,
+        <div class="alert ${result.simulation_mode ? (result.feasible ? "alert-info" : "alert-warning") : "alert-success"}">
+          ${escapeHtml(
+            result.simulation_mode
+              ? result.message || "Simulation completed."
+              : "Timetable generated."
+          )} Assigned entries: <strong>${escapeHtml(result.assigned_entries)}</strong>,
           Conflicts: <strong>${escapeHtml(result.conflicts_count)}</strong>.
           ${
-            result.pdf_path
+            result.simulation_mode
+              ? ""
+              : result.pdf_path
               ? `<div class="mt-2"><a class="btn btn-outline-success btn-sm" href="${escapeHtml(
                   result.pdf_path
                 )}" target="_blank" rel="noopener">Download PDF</a></div>`
@@ -1905,15 +1922,18 @@ if (generateForm && generateBtn && generationResult) {
         </div>
       `;
 
-      showToast("Timetable generated successfully.", "success");
-
-      await withLoading(async () => {
-        await loadSummary();
-        await loadTimetableHistory();
-        if (result?.timetable?.id) {
-          await loadTimetableDetails(result.timetable.id);
-        }
-      });
+      if (result.simulation_mode) {
+        showToast(result.feasible ? "Simulation successful." : "Simulation completed with conflicts.", result.feasible ? "success" : "warning");
+      } else {
+        showToast("Timetable generated successfully.", "success");
+        await withLoading(async () => {
+          await loadSummary();
+          await loadTimetableHistory();
+          if (result?.timetable?.id) {
+            await loadTimetableDetails(result.timetable.id);
+          }
+        });
+      }
     } catch (err) {
       const responseData = err?.responseData || {};
       const message = getRequestErrorMessage(err);
@@ -1936,6 +1956,10 @@ if (generateForm && generateBtn && generationResult) {
     } finally {
       generateBtn.disabled = false;
       generateBtn.textContent = "Generate Timetable";
+      if (simulateBtn) {
+        simulateBtn.disabled = false;
+        simulateBtn.textContent = "Simulation Mode";
+      }
     }
   });
 }

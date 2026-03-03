@@ -620,6 +620,12 @@ function resolveValidationFailureMessage(groups) {
   if (firstGroup.key === "no_subjects") {
     return "No subjects mapped to this branch for selected semester.";
   }
+  if (firstGroup.key === "no_sections") {
+    return "No sections mapped to this branch for selected semester.";
+  }
+  if (firstGroup.key === "slot_generation_failed") {
+    return "Time slot generation failed for the configured department schedule.";
+  }
 
   return "Pre-generation validation failed. Fix missing setup data and retry.";
 }
@@ -729,6 +735,8 @@ async function generateTimetableHandler(req, res, next) {
 
   try {
     const { semester_id: semesterId, version_name: versionName } = req.body;
+    const simulateOnly =
+      req.body.simulation_mode === true || String(req.body.simulation_mode || "").trim().toLowerCase() === "true";
 
     await client.query("BEGIN");
 
@@ -986,6 +994,7 @@ async function generateTimetableHandler(req, res, next) {
     });
 
     if (
+      subjectsResult.rowCount > 0 &&
       issues.missing_faculty_mapping.size === 0 &&
       issues.missing_department_assignment.size === 0 &&
       issues.missing_workload_limit.size === 0
@@ -1294,6 +1303,25 @@ async function generateTimetableHandler(req, res, next) {
         assigned_entries: 0,
         conflicts_count: conflicts.length,
         conflicts,
+        conflict_summary: conflictSummary,
+        errors: flattenGroupItems(conflictSummary),
+      });
+    }
+
+    if (simulateOnly) {
+      const conflictSummary = buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS);
+      await client.query("ROLLBACK");
+      return res.status(200).json({
+        message:
+          conflicts.length === 0
+            ? "Simulation successful. Timetable generation is feasible."
+            : "Simulation completed with conflicts.",
+        simulation_mode: true,
+        feasible: conflicts.length === 0,
+        assigned_entries: entries.length,
+        conflicts_count: conflicts.length,
+        conflicts,
+        precheck_summary: buildPrecheckSummary(precheckStatus),
         conflict_summary: conflictSummary,
         errors: flattenGroupItems(conflictSummary),
       });
