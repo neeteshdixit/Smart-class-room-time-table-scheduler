@@ -20,11 +20,11 @@ BT
 13 TL
 (Smart Classroom Timetable) Tj
 T*
-(Version: 1) Tj
+(Version: 3) Tj
 T*
 (Semester ID: 2) Tj
 T*
-(Generated At: 2026-03-03T14:09:44.933Z) Tj
+(Generated At: 2026-03-03T14:34:23.969Z) Tj
 T*
 (Assigned Entries: 32) Tj
 T*
@@ -44,35 +44,35 @@ T*
 T*
 (A | India In 21St Century | VS | 101 | D1 | #5) Tj
 T*
-(A | Instrumental Technique in forensic Science | JS | 101 | D1 | #6) Tj
+(A | Instrumental Technique in forensic Science | NS | 101 | D1 | #6) Tj
 T*
 (A | Criminology& Criminal Laws | JS | 101 | D2 | #1) Tj
 T*
-(A | Instrumental Technique in forensic Science | NS | 101 | D2 | #2) Tj
+(A | Instrumental Technique in forensic Science | JS | 101 | D2 | #2) Tj
 T*
 (A | Physics | RV | 101 | D2 | #3) Tj
 T*
 (A | Forensic Psychology | VS | 101 | D3 | #1) Tj
 T*
-(A | Forensic Psychology | VS | 101 | D4 | #1) Tj
+(A | Forensic Psychology | AR | 101 | D4 | #1) Tj
 T*
 (A | Hindi-1 | KM | 101 | D4 | #2) Tj
 T*
-(A | Instrumental Technique in forensic Science | JS | 112 | D5 | #1) Tj
+(A | Instrumental Technique in forensic Science | NS | 112 | D5 | #1) Tj
 T*
-(A | Instrumental Technique in forensic Science | JS | 112 | D5 | #2) Tj
+(A | Instrumental Technique in forensic Science | NS | 112 | D5 | #2) Tj
 T*
-(A | Hindi-1 | RV | 101 | D5 | #3) Tj
+(A | Hindi-1 | KM | 101 | D5 | #3) Tj
 T*
 (A | India In 21St Century | NS | 101 | D5 | #4) Tj
 T*
-(B | Hindi-1 | RV | 101 | D1 | #1) Tj
+(B | Hindi-1 | VS | 101 | D1 | #1) Tj
 T*
-(B | India In 21St Century | NS | 101 | D1 | #2) Tj
+(B | India In 21St Century | VS | 101 | D1 | #2) Tj
 T*
-(B | Instrumental Technique in forensic Science | NS | 112 | D1 | #5) Tj
+(B | Instrumental Technique in forensic Science | JS | 112 | D1 | #5) Tj
 T*
-(B | Instrumental Technique in forensic Science | NS | 112 | D1 | #6) Tj
+(B | Instrumental Technique in forensic Science | JS | 112 | D1 | #6) Tj
 T*
 (B | Criminology& Criminal Laws | KM | 112 | D2 | #1) Tj
 T*
@@ -82,21 +82,21 @@ T*
 T*
 (B | Physics | AR | 112 | D2 | #4) Tj
 T*
-(B | India In 21St Century | VS | 101 | D2 | #5) Tj
+(B | India In 21St Century | NS | 101 | D2 | #5) Tj
 T*
 (B | Instrumental Technique in forensic Science | JS | 101 | D2 | #6) Tj
 T*
 (B | Criminology& Criminal Laws | KM | 111 | D3 | #1) Tj
 T*
-(B | Instrumental Technique in forensic Science | JS | 101 | D3 | #2) Tj
+(B | Instrumental Technique in forensic Science | NS | 101 | D3 | #2) Tj
 T*
-(B | Physics | AR | 101 | D3 | #3) Tj
+(B | Physics | RV | 101 | D3 | #3) Tj
 T*
-(B | Forensic Psychology | AR | 111 | D4 | #1) Tj
+(B | Forensic Psychology | VS | 111 | D4 | #1) Tj
 T*
-(B | Forensic Psychology | VS | 101 | D5 | #1) Tj
+(B | Forensic Psychology | AR | 101 | D5 | #1) Tj
 T*
-(B | Hindi-1 | KM | 101 | D5 | #2) Tj
+(B | Hindi-1 | RV | 101 | D5 | #2) Tj
 ET
 endstream
 endobj

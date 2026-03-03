@@ -1112,10 +1112,6 @@ async function generateTimetableHandler(req, res, next) {
 
     const timetableId = timetableResult.rows[0].id;
     const createdAt = timetableResult.rows[0].created_at;
-    const facultySlotUsed = new Set();
-    const roomSlotUsed = new Set();
-    const sectionSlotUsed = new Set();
-    const entries = [];
     const conflicts = [];
     const conflictSummaryBuckets = createConflictSummaryBuckets();
     const slotDurationById = new Map(
@@ -1146,18 +1142,28 @@ async function generateTimetableHandler(req, res, next) {
     });
     const workingDaySequence = [...slotsByDay.keys()].sort((a, b) => a - b);
 
-    function orderedDaysForPreferredDay(preferredDay) {
+    function orderedDaysForPreferredDay(preferredDay, options = {}) {
       const preferred = Number(preferredDay);
-      if (!Number.isInteger(preferred) || !slotsByDay.has(preferred)) {
-        return workingDaySequence;
-      }
-
-      const ordered = [preferred];
+      const usePreferred = !options.ignorePreferredDay && Number.isInteger(preferred) && slotsByDay.has(preferred);
+      const ordered = usePreferred ? [preferred] : [];
       for (const day of workingDaySequence) {
-        if (day === preferred) continue;
+        if (usePreferred && day === preferred) continue;
         ordered.push(day);
       }
+      if (options.reverseDayOrder) {
+        ordered.reverse();
+      }
       return ordered;
+    }
+
+    function buildTheorySlotCandidates(preferredDay, options = {}) {
+      const candidates = [];
+      for (const day of orderedDaysForPreferredDay(preferredDay, options)) {
+        const daySlots = slotsByDay.get(day) || [];
+        const orderedSlots = options.reverseSlotOrder ? [...daySlots].reverse() : daySlots;
+        orderedSlots.forEach((slot) => candidates.push([slot]));
+      }
+      return candidates;
     }
 
     function isContinuousSlotPair(firstSlot, secondSlot) {
@@ -1170,13 +1176,21 @@ async function generateTimetableHandler(req, res, next) {
       return firstEndMinutes === secondStartMinutes;
     }
 
-    function buildPracticalBlockCandidates(preferredDay) {
+    function buildPracticalBlockCandidates(preferredDay, options = {}) {
       const candidates = [];
-      for (const day of orderedDaysForPreferredDay(preferredDay)) {
+      for (const day of orderedDaysForPreferredDay(preferredDay, options)) {
         const daySlots = slotsByDay.get(day) || [];
         if (daySlots.length < practicalSlotsPerBlock) continue;
 
-        for (let startIndex = 0; startIndex <= daySlots.length - practicalSlotsPerBlock; startIndex += 1) {
+        const startIndexes = [];
+        for (let index = 0; index <= daySlots.length - practicalSlotsPerBlock; index += 1) {
+          startIndexes.push(index);
+        }
+        if (options.reverseSlotOrder) {
+          startIndexes.reverse();
+        }
+
+        for (const startIndex of startIndexes) {
           const block = daySlots.slice(startIndex, startIndex + practicalSlotsPerBlock);
           const hasStandardDuration = block.every(
             (slot) => (slotDurationById.get(Number(slot.id)) || 0) >= Math.max(1, slotDurationMinutes)
@@ -1210,23 +1224,34 @@ async function generateTimetableHandler(req, res, next) {
       return roomType === "lecture";
     }
 
-    function roomCandidatesFor(mode, studentStrength) {
+    function roomCandidatesFor(mode, studentStrength, options = {}) {
       const requiredStrength = Number(studentStrength || 0);
+      let candidates;
       if (mode === "Practical") {
-        return labRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
+        candidates = labRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
+      } else {
+        const lectureCapacityMatched = lectureRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
+        candidates = lectureCapacityMatched.length > 0 ? lectureCapacityMatched : lectureRooms;
       }
 
-      const lectureCapacityMatched = lectureRooms.filter((room) => Number(room.capacity || 0) >= requiredStrength);
-      if (lectureCapacityMatched.length > 0) {
-        return lectureCapacityMatched;
+      if (options.reverseRoomOrder) {
+        return [...candidates].reverse();
       }
-      return lectureRooms;
+      return candidates;
     }
 
-    function rankFacultyCandidates(candidates) {
-      return [...candidates].sort((a, b) => {
-        const aLoad = facultyWorkloadMap.get(a.faculty_id) || { max: 0, assigned: 0 };
-        const bLoad = facultyWorkloadMap.get(b.faculty_id) || { max: 0, assigned: 0 };
+    function createFacultyLoadState() {
+      const cloned = new Map();
+      facultyWorkloadMap.forEach((value, key) => {
+        cloned.set(key, { ...value, assigned: 0 });
+      });
+      return cloned;
+    }
+
+    function rankFacultyCandidates(candidates, facultyLoadState, options = {}) {
+      const ranked = [...candidates].sort((a, b) => {
+        const aLoad = facultyLoadState.get(a.faculty_id) || { max: 0, assigned: 0 };
+        const bLoad = facultyLoadState.get(b.faculty_id) || { max: 0, assigned: 0 };
         const aRatio = aLoad.max > 0 ? aLoad.assigned / aLoad.max : Number.POSITIVE_INFINITY;
         const bRatio = bLoad.max > 0 ? bLoad.assigned / bLoad.max : Number.POSITIVE_INFINITY;
 
@@ -1234,11 +1259,16 @@ async function generateTimetableHandler(req, res, next) {
         if (aLoad.assigned !== bLoad.assigned) return aLoad.assigned - bLoad.assigned;
         return String(a.faculty_name || "").localeCompare(String(b.faculty_name || ""));
       });
+      if (options.reverseFacultyOrder) {
+        ranked.reverse();
+      }
+      return ranked;
     }
 
-    function tryAssign(section, subject, mode, preferredDay) {
+    function tryAssignRequest(request, options, schedulingState) {
+      const { section, subject, mode, preferred_day: preferredDay } = request;
       const facultyCandidates = subjectFacultyMap.get(subject.id) || [];
-      const rooms = roomCandidatesFor(mode, section.student_strength);
+      const rooms = roomCandidatesFor(mode, section.student_strength, options);
       const counters = {
         [CONFLICT_REASON.SECTION_CLASH]: 0,
         [CONFLICT_REASON.FACULTY_CLASH]: 0,
@@ -1258,29 +1288,29 @@ async function generateTimetableHandler(req, res, next) {
 
       const slotGroups =
         mode === "Practical"
-          ? buildPracticalBlockCandidates(preferredDay)
-          : orderedDaysForPreferredDay(preferredDay).flatMap((day) => (slotsByDay.get(day) || []).map((slot) => [slot]));
+          ? buildPracticalBlockCandidates(preferredDay, options)
+          : buildTheorySlotCandidates(preferredDay, options);
       if (mode === "Practical" && slotGroups.length === 0) {
         return { success: false, reason: CONFLICT_REASON.NO_CONTINUOUS_LAB_BLOCK };
       }
 
       for (const slotGroup of slotGroups) {
-        const sectionBusy = slotGroup.some((slot) => sectionSlotUsed.has(`${section.id}-${slot.id}`));
+        const sectionBusy = slotGroup.some((slot) => schedulingState.sectionSlotUsed.has(`${section.id}-${slot.id}`));
         if (sectionBusy) {
           counters[CONFLICT_REASON.SECTION_CLASH] += 1;
           continue;
         }
 
-        const rankedFaculty = rankFacultyCandidates(facultyCandidates);
+        const rankedFaculty = rankFacultyCandidates(facultyCandidates, schedulingState.facultyLoadState, options);
         for (const faculty of rankedFaculty) {
           const facultyId = faculty.faculty_id;
-          const load = facultyWorkloadMap.get(facultyId);
+          const load = schedulingState.facultyLoadState.get(facultyId);
           if (!load || load.assigned + slotGroup.length > load.max) {
             counters[CONFLICT_REASON.WORKLOAD_EXCEEDED] += 1;
             continue;
           }
 
-          const facultyBusy = slotGroup.some((slot) => facultySlotUsed.has(`${facultyId}-${slot.id}`));
+          const facultyBusy = slotGroup.some((slot) => schedulingState.facultySlotUsed.has(`${facultyId}-${slot.id}`));
           if (facultyBusy) {
             counters[CONFLICT_REASON.FACULTY_CLASH] += 1;
             continue;
@@ -1291,22 +1321,21 @@ async function generateTimetableHandler(req, res, next) {
               continue;
             }
 
-            const roomBusy = slotGroup.some((slot) => roomSlotUsed.has(`${room.id}-${slot.id}`));
+            const roomBusy = slotGroup.some((slot) => schedulingState.roomSlotUsed.has(`${room.id}-${slot.id}`));
             if (roomBusy) {
               counters[CONFLICT_REASON.ROOM_CLASH] += 1;
               continue;
             }
 
             slotGroup.forEach((slot) => {
-              sectionSlotUsed.add(`${section.id}-${slot.id}`);
-              facultySlotUsed.add(`${facultyId}-${slot.id}`);
-              roomSlotUsed.add(`${room.id}-${slot.id}`);
+              schedulingState.sectionSlotUsed.add(`${section.id}-${slot.id}`);
+              schedulingState.facultySlotUsed.add(`${facultyId}-${slot.id}`);
+              schedulingState.roomSlotUsed.add(`${room.id}-${slot.id}`);
             });
             load.assigned += slotGroup.length;
 
-            return {
-              success: true,
-              entries: slotGroup.map((slot) => ({
+            schedulingState.entries.push(
+              ...slotGroup.map((slot) => ({
                 timetable_id: timetableId,
                 section_id: section.id,
                 subject_id: subject.id,
@@ -1317,8 +1346,13 @@ async function generateTimetableHandler(req, res, next) {
                 day_of_week: slot.day_of_week,
                 slot_number: slot.slot_number,
                 slot_minutes: slotDurationById.get(Number(slot.id)) || slotDurationMinutes,
-              })),
-            };
+              }))
+            );
+            schedulingState.assignedRequestCountByKey.set(
+              request.request_key,
+              (schedulingState.assignedRequestCountByKey.get(request.request_key) || 0) + 1
+            );
+            return { success: true };
           }
         }
       }
@@ -1348,54 +1382,466 @@ async function generateTimetableHandler(req, res, next) {
               requested_per_week: demandCount,
               preferred_day: preferredDay,
               request_key: makeRequestKey(section.id, subject.id, demand.mode),
+              request_id: `${section.id}:${subject.id}:${demand.mode}:${i + 1}`,
             });
           }
         }
       }
     }
 
-    sessionRequests.sort((a, b) => {
-      const aPractical = a.mode === "Practical" ? 0 : 1;
-      const bPractical = b.mode === "Practical" ? 0 : 1;
-      if (aPractical !== bPractical) return aPractical - bPractical;
+    function sortSessionRequests(requests, failureState, options = {}) {
+      const sorted = [...requests].sort((a, b) => {
+        const aFailures = failureState?.get(a.request_id)?.count || 0;
+        const bFailures = failureState?.get(b.request_id)?.count || 0;
+        if (aFailures !== bFailures) {
+          return bFailures - aFailures;
+        }
 
-      const aStrength = Number(a.section.student_strength || 0);
-      const bStrength = Number(b.section.student_strength || 0);
-      if (aStrength !== bStrength) return bStrength - aStrength;
+        const aStrength = Number(a.section.student_strength || 0);
+        const bStrength = Number(b.section.student_strength || 0);
+        if (aStrength !== bStrength) return bStrength - aStrength;
 
-      const bySection = String(a.section.section_name || "").localeCompare(String(b.section.section_name || ""));
-      if (bySection !== 0) return bySection;
-      return String(a.subject.subject_name || "").localeCompare(String(b.subject.subject_name || ""));
-    });
+        const aDay = Number(a.preferred_day || 0);
+        const bDay = Number(b.preferred_day || 0);
+        if (aDay !== bDay) return aDay - bDay;
 
-    const assignedRequestCountByKey = new Map();
-    for (const request of sessionRequests) {
-      const assigned = tryAssign(request.section, request.subject, request.mode, request.preferred_day);
-      if (assigned.success) {
-        entries.push(...assigned.entries);
-        assignedRequestCountByKey.set(request.request_key, (assignedRequestCountByKey.get(request.request_key) || 0) + 1);
-      } else {
-        const reasonLabel =
-          assigned.reason === CONFLICT_REASON.NO_LAB_AVAILABLE
-            ? `No lab available for subject ${request.subject.subject_name}`
-            : assigned.reason === CONFLICT_REASON.NO_CONTINUOUS_LAB_BLOCK
-              ? `No continuous lab block available for subject ${request.subject.subject_name}`
-            : CONFLICT_REASON_LABELS[assigned.reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
-        const summaryKey = conflictReasonToSummaryKey(assigned.reason);
-        const conflictItem = `${request.section.section_name} - ${request.subject.subject_name}`;
-        conflicts.push({
-          section_id: request.section.id,
-          section_name: request.section.section_name,
-          subject_id: request.subject.id,
-          subject_name: request.subject.subject_name,
-          mode: request.mode,
-          requested_per_week: request.requested_per_week,
-          reason: reasonLabel,
-          reason_key: assigned.reason,
-        });
-        conflictSummaryBuckets[summaryKey].add(conflictItem);
+        const bySection = String(a.section.section_name || "").localeCompare(String(b.section.section_name || ""));
+        if (bySection !== 0) return bySection;
+        return String(a.subject.subject_name || "").localeCompare(String(b.subject.subject_name || ""));
+      });
+      if (options.reverseRequestOrder) {
+        sorted.reverse();
+      }
+      return sorted;
+    }
+
+    function calculateLayoutPenalty(candidateEntries) {
+      const slotNumbersBySectionDay = new Map();
+      for (const entry of candidateEntries) {
+        const key = `${entry.section_id}-${entry.day_of_week}`;
+        if (!slotNumbersBySectionDay.has(key)) {
+          slotNumbersBySectionDay.set(key, new Set());
+        }
+        slotNumbersBySectionDay.get(key).add(Number(entry.slot_number));
+      }
+
+      let holePenalty = 0;
+      let lateStartPenalty = 0;
+      let spanPenalty = 0;
+
+      slotNumbersBySectionDay.forEach((slotSet) => {
+        const slotNumbers = [...slotSet].filter((value) => Number.isInteger(value) && value > 0).sort((a, b) => a - b);
+        if (slotNumbers.length === 0) return;
+        const minSlot = slotNumbers[0];
+        const maxSlot = slotNumbers[slotNumbers.length - 1];
+        const holes = Math.max(0, maxSlot - minSlot + 1 - slotNumbers.length);
+
+        holePenalty += holes;
+        lateStartPenalty += Math.max(0, minSlot - 1);
+        spanPenalty += maxSlot - minSlot + 1;
+      });
+
+      return holePenalty * 100 + lateStartPenalty * 10 + spanPenalty;
+    }
+
+    function runSchedulingProfile(profile) {
+      const schedulingState = {
+        facultySlotUsed: new Set(),
+        roomSlotUsed: new Set(),
+        sectionSlotUsed: new Set(),
+        facultyLoadState: createFacultyLoadState(),
+        entries: [],
+        assignedRequestCountByKey: new Map(),
+      };
+      const failureState = new Map();
+
+      function runModeRequests(modeRequests) {
+        let pending = [...modeRequests];
+        let noProgressPasses = 0;
+        const maxPasses = Math.max(6, profile.variants.length * 4);
+
+        for (let pass = 0; pass < maxPasses && pending.length > 0; pass += 1) {
+          const variant = profile.variants[pass % profile.variants.length];
+          const orderedPending = sortSessionRequests(
+            pending,
+            profile.preferFailureFirst ? failureState : null,
+            {
+              reverseRequestOrder: profile.reverseRequestOrder ? pass % 2 === 1 : false,
+            }
+          );
+
+          let assignedThisPass = 0;
+          const nextPending = [];
+          for (const request of orderedPending) {
+            const assigned = tryAssignRequest(request, variant, schedulingState);
+            if (assigned.success) {
+              assignedThisPass += 1;
+            } else {
+              const failure = failureState.get(request.request_id) || { count: 0, lastReason: CONFLICT_REASON.NO_SLOT_AVAILABLE };
+              failureState.set(request.request_id, {
+                count: failure.count + 1,
+                lastReason: assigned.reason || CONFLICT_REASON.NO_SLOT_AVAILABLE,
+              });
+              nextPending.push(request);
+            }
+          }
+
+          pending = nextPending;
+          if (assignedThisPass === 0) {
+            noProgressPasses += 1;
+          } else {
+            noProgressPasses = 0;
+          }
+          if (noProgressPasses >= profile.variants.length) {
+            break;
+          }
+        }
+
+        return pending;
+      }
+
+      const practicalRequests = sortSessionRequests(
+        sessionRequests.filter((request) => request.mode === "Practical"),
+        null,
+        { reverseRequestOrder: profile.reverseRequestOrder }
+      );
+      const theoryRequests = sortSessionRequests(
+        sessionRequests.filter((request) => request.mode !== "Practical"),
+        null,
+        { reverseRequestOrder: profile.reverseRequestOrder }
+      );
+
+      const pendingPractical = runModeRequests(practicalRequests);
+      const pendingTheory = runModeRequests(theoryRequests);
+      const pendingRequests = [...pendingPractical, ...pendingTheory];
+
+      return {
+        schedulingState,
+        entries: schedulingState.entries,
+        assignedRequestCountByKey: schedulingState.assignedRequestCountByKey,
+        failureState,
+        pendingRequests,
+        pendingPracticalCount: pendingRequests.filter((request) => request.mode === "Practical").length,
+        layoutPenalty: calculateLayoutPenalty(schedulingState.entries),
+      };
+    }
+
+    function isBetterSchedulingResult(candidate, currentBest) {
+      if (!currentBest) return true;
+      if (candidate.pendingPracticalCount !== currentBest.pendingPracticalCount) {
+        return candidate.pendingPracticalCount < currentBest.pendingPracticalCount;
+      }
+      if (candidate.pendingRequests.length !== currentBest.pendingRequests.length) {
+        return candidate.pendingRequests.length < currentBest.pendingRequests.length;
+      }
+      if (candidate.entries.length !== currentBest.entries.length) {
+        return candidate.entries.length > currentBest.entries.length;
+      }
+      if (candidate.layoutPenalty !== currentBest.layoutPenalty) {
+        return candidate.layoutPenalty < currentBest.layoutPenalty;
+      }
+      return false;
+    }
+
+    const schedulingProfiles = [
+      {
+        reverseRequestOrder: false,
+        preferFailureFirst: false,
+        variants: [
+          {
+            ignorePreferredDay: false,
+            reverseDayOrder: false,
+            reverseSlotOrder: false,
+            reverseFacultyOrder: false,
+            reverseRoomOrder: false,
+          },
+          {
+            ignorePreferredDay: false,
+            reverseDayOrder: false,
+            reverseSlotOrder: false,
+            reverseFacultyOrder: true,
+            reverseRoomOrder: true,
+          },
+          {
+            ignorePreferredDay: true,
+            reverseDayOrder: false,
+            reverseSlotOrder: false,
+            reverseFacultyOrder: false,
+            reverseRoomOrder: false,
+          },
+        ],
+      },
+      {
+        reverseRequestOrder: false,
+        preferFailureFirst: true,
+        variants: [
+          {
+            ignorePreferredDay: false,
+            reverseDayOrder: true,
+            reverseSlotOrder: false,
+            reverseFacultyOrder: false,
+            reverseRoomOrder: false,
+          },
+          {
+            ignorePreferredDay: true,
+            reverseDayOrder: true,
+            reverseSlotOrder: false,
+            reverseFacultyOrder: true,
+            reverseRoomOrder: true,
+          },
+        ],
+      },
+      {
+        reverseRequestOrder: true,
+        preferFailureFirst: true,
+        variants: [
+          {
+            ignorePreferredDay: false,
+            reverseDayOrder: false,
+            reverseSlotOrder: true,
+            reverseFacultyOrder: false,
+            reverseRoomOrder: false,
+          },
+          {
+            ignorePreferredDay: true,
+            reverseDayOrder: true,
+            reverseSlotOrder: true,
+            reverseFacultyOrder: true,
+            reverseRoomOrder: true,
+          },
+        ],
+      },
+    ];
+
+    let bestSchedulingResult = null;
+    for (const profile of schedulingProfiles) {
+      const candidate = runSchedulingProfile(profile);
+      if (isBetterSchedulingResult(candidate, bestSchedulingResult)) {
+        bestSchedulingResult = candidate;
+      }
+      if (candidate.pendingRequests.length === 0) {
+        break;
       }
     }
+
+    const schedulingState =
+      bestSchedulingResult?.schedulingState ||
+      {
+        facultySlotUsed: new Set(),
+        roomSlotUsed: new Set(),
+        sectionSlotUsed: new Set(),
+        facultyLoadState: createFacultyLoadState(),
+        entries: [],
+        assignedRequestCountByKey: new Map(),
+      };
+    const entries = schedulingState.entries;
+    const assignedRequestCountByKey = schedulingState.assignedRequestCountByKey;
+    let unresolvedRequests = [...(bestSchedulingResult?.pendingRequests || [])];
+    const unresolvedFailureState = bestSchedulingResult?.failureState || new Map();
+
+    const fallbackVariants = [
+      {
+        ignorePreferredDay: false,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+      },
+      {
+        ignorePreferredDay: false,
+        reverseDayOrder: false,
+        reverseSlotOrder: true,
+        reverseFacultyOrder: true,
+        reverseRoomOrder: true,
+      },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+      },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: true,
+        reverseSlotOrder: true,
+        reverseFacultyOrder: true,
+        reverseRoomOrder: true,
+      },
+    ];
+
+    function tryAssignWithVariants(request, variants) {
+      for (const variant of variants) {
+        const assigned = tryAssignRequest(request, variant, schedulingState);
+        if (assigned.success) {
+          return { success: true };
+        }
+      }
+      return { success: false };
+    }
+
+    // Final required-hours completion attempt: keep iterating unresolved requests with broader variants.
+    if (unresolvedRequests.length > 0) {
+      let pending = [...unresolvedRequests];
+      let noProgressPasses = 0;
+      const maxPasses = Math.max(8, fallbackVariants.length * 3);
+
+      for (let pass = 0; pass < maxPasses && pending.length > 0; pass += 1) {
+        const orderedPending = sortSessionRequests(pending, unresolvedFailureState, {
+          reverseRequestOrder: pass % 2 === 1,
+        });
+        const nextPending = [];
+        let assignedThisPass = 0;
+
+        for (const request of orderedPending) {
+          const attempt = tryAssignWithVariants(request, fallbackVariants);
+          if (attempt.success) {
+            assignedThisPass += 1;
+          } else {
+            const failure = unresolvedFailureState.get(request.request_id) || { count: 0, lastReason: CONFLICT_REASON.NO_SLOT_AVAILABLE };
+            unresolvedFailureState.set(request.request_id, {
+              count: failure.count + 1,
+              lastReason: failure.lastReason || CONFLICT_REASON.NO_SLOT_AVAILABLE,
+            });
+            nextPending.push(request);
+          }
+        }
+
+        pending = nextPending;
+        if (assignedThisPass === 0) {
+          noProgressPasses += 1;
+        } else {
+          noProgressPasses = 0;
+        }
+        if (noProgressPasses >= 2) {
+          break;
+        }
+      }
+
+      unresolvedRequests = pending;
+    }
+
+    // Intelligent blank-slot fill (only after required hours are fully placed).
+    // This keeps day-wise timetable dense while still respecting room/faculty/section/workload rules.
+    if (unresolvedRequests.length === 0) {
+      const practicalSubjects = subjectsResult.rows.filter((subject) => {
+        const type = normalizeSubjectType(subject.subject_type);
+        return type === "Practical" || type === "Theory + Practical";
+      });
+      const theorySubjects = subjectsResult.rows.filter((subject) => normalizeSubjectType(subject.subject_type) !== "Practical");
+      const totalSectionCapacity = sectionsResult.rows.length * slots.length;
+      const fillUsage = new Map();
+
+      entries.forEach((entry) => {
+        const key = `${entry.section_id}::${entry.subject_id}::${entry.session_mode}`;
+        fillUsage.set(key, (fillUsage.get(key) || 0) + 1);
+      });
+
+      const overflowVariants = [
+        {
+          ignorePreferredDay: false,
+          reverseDayOrder: false,
+          reverseSlotOrder: false,
+          reverseFacultyOrder: false,
+          reverseRoomOrder: false,
+        },
+        {
+          ignorePreferredDay: false,
+          reverseDayOrder: true,
+          reverseSlotOrder: false,
+          reverseFacultyOrder: true,
+          reverseRoomOrder: true,
+        },
+        {
+          ignorePreferredDay: true,
+          reverseDayOrder: false,
+          reverseSlotOrder: true,
+          reverseFacultyOrder: true,
+          reverseRoomOrder: true,
+        },
+      ];
+
+      const maxFillPasses = Math.max(8, totalSectionCapacity);
+      for (let pass = 0; pass < maxFillPasses && entries.length < totalSectionCapacity; pass += 1) {
+        let passProgress = 0;
+
+        for (const section of sectionsResult.rows) {
+          const modeOrder = pass % 2 === 0 ? ["Practical", "Theory"] : ["Theory", "Practical"];
+          let sectionAssigned = false;
+
+          for (const mode of modeOrder) {
+            const subjectPool = mode === "Practical" ? practicalSubjects : theorySubjects;
+            if (subjectPool.length === 0) continue;
+
+            const sortedPool = [...subjectPool].sort((a, b) => {
+              const aKey = `${section.id}::${a.id}::${mode}`;
+              const bKey = `${section.id}::${b.id}::${mode}`;
+              const aCount = fillUsage.get(aKey) || 0;
+              const bCount = fillUsage.get(bKey) || 0;
+              if (aCount !== bCount) return aCount - bCount;
+              return String(a.subject_name || "").localeCompare(String(b.subject_name || ""));
+            });
+
+            for (const subject of sortedPool) {
+              const preferredDay = workingDaySequence.length
+                ? workingDaySequence[(pass + Number(section.id) + Number(subject.id)) % workingDaySequence.length]
+                : null;
+              const overflowRequest = {
+                section,
+                subject,
+                mode,
+                preferred_day: preferredDay,
+                requested_per_week: 1,
+                request_key: `overflow::${section.id}::${subject.id}::${mode}`,
+                request_id: `overflow:${section.id}:${subject.id}:${mode}:${pass}`,
+              };
+
+              const attempt = tryAssignWithVariants(overflowRequest, overflowVariants);
+              if (!attempt.success) {
+                continue;
+              }
+
+              const usageKey = `${section.id}::${subject.id}::${mode}`;
+              fillUsage.set(usageKey, (fillUsage.get(usageKey) || 0) + 1);
+              passProgress += 1;
+              sectionAssigned = true;
+              break;
+            }
+
+            if (sectionAssigned) {
+              break;
+            }
+          }
+        }
+
+        if (passProgress === 0) {
+          break;
+        }
+      }
+    }
+
+    unresolvedRequests.forEach((request) => {
+      const reason = unresolvedFailureState.get(request.request_id)?.lastReason || CONFLICT_REASON.NO_SLOT_AVAILABLE;
+      const reasonLabel =
+        reason === CONFLICT_REASON.NO_LAB_AVAILABLE
+          ? `No lab available for subject ${request.subject.subject_name}`
+          : reason === CONFLICT_REASON.NO_CONTINUOUS_LAB_BLOCK
+            ? `No continuous lab block available for subject ${request.subject.subject_name}`
+            : CONFLICT_REASON_LABELS[reason] || CONFLICT_REASON_LABELS[CONFLICT_REASON.NO_SLOT_AVAILABLE];
+      const summaryKey = conflictReasonToSummaryKey(reason);
+      const conflictItem = `${request.section.section_name} - ${request.subject.subject_name}`;
+      conflicts.push({
+        section_id: request.section.id,
+        section_name: request.section.section_name,
+        subject_id: request.subject.id,
+        subject_name: request.subject.subject_name,
+        mode: request.mode,
+        requested_per_week: request.requested_per_week,
+        reason: reasonLabel,
+        reason_key: reason,
+      });
+      conflictSummaryBuckets[summaryKey].add(conflictItem);
+    });
 
     const requestedCountBySectionSubjectMode = new Map();
     sessionRequests.forEach((request) => {
