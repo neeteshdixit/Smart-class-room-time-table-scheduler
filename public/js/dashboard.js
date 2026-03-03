@@ -1503,6 +1503,7 @@ async function loadTimetableHistory() {
 
   state.history.total = result.pagination.total;
   state.history.latestTimetableId = Number(result.data?.[0]?.timetable_id || 0) || null;
+  const canDeleteTimetable = isAdminUser();
 
   renderTableRows(
     timetableHistoryBody,
@@ -1523,8 +1524,20 @@ async function loadTimetableHistory() {
               : '<span class="text-secondary small">N/A</span>'
           }
         </td>
+        <td>
+          ${
+            canDeleteTimetable && row.timetable_id
+              ? `<button
+                  type="button"
+                  class="btn btn-outline-danger btn-sm"
+                  data-delete-timetable-id="${escapeHtml(row.timetable_id)}"
+                  data-delete-history-id="${escapeHtml(row.id)}"
+                >Delete</button>`
+              : '<span class="text-secondary small">N/A</span>'
+          }
+        </td>
       </tr>`,
-    6
+    7
   );
 
   updatePager(
@@ -1540,6 +1553,38 @@ async function loadTimetableDetails(timetableId, preferredSectionId = null) {
     headers: authHeaders(),
   });
   renderTimetableGrid(detail, preferredSectionId);
+}
+
+async function deleteTimetableRecord(timetableId, historyId) {
+  const safeTimetableId = Number(timetableId);
+  if (!Number.isInteger(safeTimetableId) || safeTimetableId <= 0) {
+    throw new Error("Invalid timetable id");
+  }
+
+  const safeHistoryId = Number(historyId);
+  const hasHistoryId = Number.isInteger(safeHistoryId) && safeHistoryId > 0;
+  const query = hasHistoryId ? `?history_id=${encodeURIComponent(String(safeHistoryId))}` : "";
+
+  const result = await apiRequest(`/timetable/${safeTimetableId}${query}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+
+  const isCurrentDetailDeleted = Number(state.timetableView.detail?.timetable?.id || 0) === safeTimetableId;
+  await loadTimetableHistory();
+
+  if (isCurrentDetailDeleted) {
+    state.timetableView.detail = null;
+    state.timetableView.sectionId = null;
+
+    if (Number.isInteger(state.history.latestTimetableId) && state.history.latestTimetableId > 0) {
+      await loadTimetableDetails(state.history.latestTimetableId);
+    } else {
+      renderTimetablePlaceholder("Generate or select a timetable to view.");
+    }
+  }
+
+  return result;
 }
 
 async function loadActivityLog() {
@@ -1987,14 +2032,41 @@ bindClick("historyNext", () => {
 });
 
 if (timetableHistoryBody) {
-  timetableHistoryBody.addEventListener("click", (event) => {
+  timetableHistoryBody.addEventListener("click", async (event) => {
     const viewBtn = event.target.closest("[data-view-timetable-id]");
-    if (!viewBtn) return;
+    if (viewBtn) {
+      const timetableId = Number(viewBtn.dataset.viewTimetableId);
+      if (!Number.isInteger(timetableId) || timetableId <= 0) return;
 
-    const timetableId = Number(viewBtn.dataset.viewTimetableId);
+      withLoading(() => loadTimetableDetails(timetableId)).catch(handleRequestError);
+      return;
+    }
+
+    const deleteBtn = event.target.closest("[data-delete-timetable-id]");
+    if (!deleteBtn) return;
+
+    const timetableId = Number(deleteBtn.dataset.deleteTimetableId);
+    const historyId = Number(deleteBtn.dataset.deleteHistoryId);
     if (!Number.isInteger(timetableId) || timetableId <= 0) return;
 
-    withLoading(() => loadTimetableDetails(timetableId)).catch(handleRequestError);
+    const confirmed = window.confirm("Are you sure you want to delete this timetable?");
+    if (!confirmed) return;
+
+    deleteBtn.disabled = true;
+    const previousText = deleteBtn.textContent;
+    deleteBtn.textContent = "Deleting...";
+
+    try {
+      const result = await withLoading(() => deleteTimetableRecord(timetableId, historyId));
+      const message = String(result?.message || "Timetable deleted successfully.");
+      showToast(message, "success");
+      showAlert(dashboardAlertId, message, "success");
+    } catch (err) {
+      handleRequestError(err);
+    } finally {
+      deleteBtn.disabled = false;
+      deleteBtn.textContent = previousText || "Delete";
+    }
   });
 }
 
