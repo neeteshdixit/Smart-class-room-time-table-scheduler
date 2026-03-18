@@ -75,6 +75,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/smart_scheduler
 JWT_SECRET=replace_with_a_secure_random_secret
 JWT_EXPIRES_IN=30m
 LOGIN_OTP_TOKEN_EXPIRES_IN=10m
+OTP_PREVIEW_ENABLED=false
 PASSWORD_RESET_OTP_EXPIRES_MINUTES=5
 PASSWORD_RESET_OTP_MAX_ATTEMPTS=5
 SMTP_HOST=smtp.gmail.com
@@ -142,6 +143,7 @@ Resources:
 - In development mode, login/resend response includes `otp_preview`.
 - In development mode, forgot-password response includes `otp_preview` for easier local testing.
 - In production mode, `otp_preview` is hidden.
+- To force preview in production for testing only, set `OTP_PREVIEW_ENABLED=true`.
 
 ## Notes
 - Roles supported: `ADMIN`, `FACULTY`, `USER`.

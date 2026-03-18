@@ -60,6 +60,20 @@ function getResetOtpMaxAttempts() {
   return toPositiveInt(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS, 5);
 }
 
+function isTruthyEnvFlag(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+}
+
+function shouldIncludeOtpPreview() {
+  if (isTruthyEnvFlag(process.env.OTP_PREVIEW_ENABLED)) {
+    return true;
+  }
+  return String(process.env.NODE_ENV || "").toLowerCase() !== "production";
+}
+
 function normalizeRole(inputRole) {
   const value = String(inputRole || ROLE_FACULTY).trim().toLowerCase();
   if (value === "admin") return ROLE_ADMIN;
@@ -347,7 +361,7 @@ async function login(payload) {
     message: "Credentials verified. OTP sent to your registered mobile number.",
     login_token: loginToken,
     mobile_number_masked: maskMobileNumber(user.mobile_number),
-    otp_preview: process.env.NODE_ENV !== "production" ? otpCode : undefined,
+    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }
 
@@ -425,7 +439,7 @@ async function resendOtp(payload) {
 
   return {
     message: "OTP resent successfully",
-    otp_preview: process.env.NODE_ENV !== "production" ? otpCode : undefined,
+    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }
 
@@ -462,7 +476,7 @@ async function forgotPassword(payload) {
   return {
     message: "OTP sent to your registered email",
     email: user.email,
-    otp_preview: process.env.NODE_ENV !== "production" ? otpCode : undefined,
+    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }
 
