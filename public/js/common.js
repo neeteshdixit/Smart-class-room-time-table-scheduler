@@ -11,18 +11,54 @@ function normalizeApiBase(value) {
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
-function getApiBaseCandidates() {
-  const candidates = [normalizeApiBase(activeApiBase), DEFAULT_API_BASE];
-  const hostname = window.location.hostname || "localhost";
-  candidates.push(`http://${hostname}:5000/api`);
-  if (hostname !== "127.0.0.1") {
-    candidates.push("http://127.0.0.1:5000/api");
-  }
-  if (hostname !== "localhost") {
-    candidates.push("http://localhost:5000/api");
+function readRuntimeApiBase() {
+  try {
+    const fromWindow = window.API_BASE_URL || window.__API_BASE_URL__;
+    if (fromWindow) return normalizeApiBase(fromWindow);
+
+    const metaTag = document.querySelector('meta[name="api-base-url"]');
+    if (metaTag?.content) return normalizeApiBase(metaTag.content);
+  } catch (err) {
+    // ignore runtime config read errors
   }
 
-  return [...new Set(candidates.map(normalizeApiBase))];
+  return "";
+}
+
+function isSecurePage() {
+  return String(window.location.protocol || "").toLowerCase() === "https:";
+}
+
+function isHttpUrl(value) {
+  return /^http:\/\//i.test(String(value || ""));
+}
+
+function getApiBaseCandidates() {
+  const runtimeApiBase = readRuntimeApiBase();
+  const candidates = [runtimeApiBase, normalizeApiBase(activeApiBase), DEFAULT_API_BASE];
+  const hostname = window.location.hostname || "localhost";
+  const isLocalHost = hostname === "localhost" || hostname === "127.0.0.1";
+
+  if (window.location.origin && window.location.origin !== "null") {
+    candidates.push(`${window.location.origin}/api`);
+  }
+
+  // Only try localhost hardcoded dev fallbacks in local/dev browsing contexts.
+  if (!isSecurePage() || isLocalHost) {
+    candidates.push(`http://${hostname}:5000/api`);
+    if (hostname !== "127.0.0.1") {
+      candidates.push("http://127.0.0.1:5000/api");
+    }
+    if (hostname !== "localhost") {
+      candidates.push("http://localhost:5000/api");
+    }
+  }
+
+  const normalized = [...new Set(candidates.filter(Boolean).map(normalizeApiBase))];
+  if (!isSecurePage()) return normalized;
+
+  // On HTTPS pages, skip insecure absolute HTTP targets to avoid mixed-content failures.
+  return normalized.filter((candidate) => !isHttpUrl(candidate));
 }
 
 function setActiveApiBase(base) {
@@ -91,6 +127,12 @@ async function apiRequest(endpoint, options = {}) {
       }
       throw error;
     }
+  }
+
+  if (lastError?.name === "TypeError") {
+    throw new Error(
+      "Unable to reach the server. Check backend status, API base URL, CORS, and network/firewall settings."
+    );
   }
 
   throw lastError || new Error("Request failed");
