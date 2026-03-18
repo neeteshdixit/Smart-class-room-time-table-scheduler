@@ -81,6 +81,7 @@ PASSWORD_RESET_OTP_MAX_ATTEMPTS=5
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_SECURE=false
+SMTP_TIMEOUT_MS=15000
 SMTP_USER=your_smtp_user@example.com
 SMTP_PASS=your_smtp_password
 SMTP_FROM=no-reply@example.com
@@ -142,6 +143,12 @@ Resources:
 ## OTP Behavior
 - Login/resend and forgot-password responses include `otp_preview` by default for easier testing.
 - To hide preview in production, set `OTP_PREVIEW_ENABLED=false`.
+
+## SMTP Troubleshooting
+- If forgot-password stays on "Sending..." for too long, set `SMTP_TIMEOUT_MS` (default `15000`) to fail fast with a clear error.
+- Ensure outbound SMTP is allowed from your host/network (typically port `587` or `465`).
+- For Gmail SMTP, use an App Password in `SMTP_PASS` with 2-step verification enabled.
+- If your Gmail App Password is copied with spaces (e.g. `abcd efgh ijkl mnop`), it is normalized automatically.
 
 ## Notes
 - Roles supported: `ADMIN`, `FACULTY`, `USER`.
