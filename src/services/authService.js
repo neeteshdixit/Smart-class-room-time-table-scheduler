@@ -68,10 +68,12 @@ function isTruthyEnvFlag(value) {
 }
 
 function shouldIncludeOtpPreview() {
-  if (isTruthyEnvFlag(process.env.OTP_PREVIEW_ENABLED)) {
-    return true;
+  const raw = String(process.env.OTP_PREVIEW_ENABLED || "").trim();
+  if (raw) {
+    return isTruthyEnvFlag(raw);
   }
-  return String(process.env.NODE_ENV || "").toLowerCase() !== "production";
+  // Default enabled so OTP flow remains testable when no SMS gateway is wired.
+  return true;
 }
 
 function normalizeRole(inputRole) {

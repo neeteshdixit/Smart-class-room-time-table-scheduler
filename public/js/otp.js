@@ -11,6 +11,8 @@ if (!loginToken) {
 const previewCode = sessionStorage.getItem("otp_preview");
 if (otpPreview && previewCode) {
   otpPreview.textContent = `Development OTP: ${previewCode}`;
+} else if (otpPreview) {
+  otpPreview.textContent = "OTP preview not received yet. Tap Resend OTP.";
 }
 
 if (otpForm) {
@@ -61,6 +63,9 @@ if (resendOtpBtn) {
       });
       if (result.otp_preview) {
         otpPreview.textContent = `Development OTP: ${result.otp_preview}`;
+        sessionStorage.setItem("otp_preview", result.otp_preview);
+      } else if (otpPreview) {
+        otpPreview.textContent = "Server did not return OTP preview.";
       }
       showAlert("otpAlert", "OTP resent successfully.", "success");
     } catch (err) {
