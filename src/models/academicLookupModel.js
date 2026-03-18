@@ -216,7 +216,7 @@ async function getDepartmentSemesterDetails(departmentId, db) {
       const insertedBranch = await conn.query(
         `INSERT INTO branches (branch_name, branch_code, department_id, program_type)
          VALUES ($1, $2, $3, 'UG')
-         ON CONFLICT (branch_code) DO NOTHING
+         ON CONFLICT DO NOTHING
          RETURNING id`,
         [branchName, branchCode, departmentId]
       );

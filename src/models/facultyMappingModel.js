@@ -20,12 +20,32 @@ async function addFacultyUserSubjects(facultyUserId, subjectIds, db) {
   const conn = getDb(db);
   if (!subjectIds.length) return;
 
-  await conn.query(
-    `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
-     SELECT $1, UNNEST($2::int[])
-     ON CONFLICT (faculty_user_id, subject_id) WHERE faculty_user_id IS NOT NULL DO NOTHING`,
-    [facultyUserId, subjectIds]
-  );
+  try {
+    await conn.query(
+      `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
+       SELECT $1, UNNEST($2::int[])
+       ON CONFLICT (faculty_user_id, subject_id) WHERE faculty_user_id IS NOT NULL DO NOTHING`,
+      [facultyUserId, subjectIds]
+    );
+  } catch (err) {
+    // Fallback for older schemas that do not yet have the expected unique index.
+    if (err.code !== "42P10") {
+      throw err;
+    }
+
+    await conn.query(
+      `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
+       SELECT $1, src.subject_id
+       FROM UNNEST($2::int[]) AS src(subject_id)
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM faculty_subjects fs
+         WHERE fs.faculty_user_id = $1
+           AND fs.subject_id = src.subject_id
+       )`,
+      [facultyUserId, subjectIds]
+    );
+  }
 }
 
 async function findFacultyUserSubjectByName(subjectName, db) {

@@ -119,12 +119,32 @@ async function syncSubjectFacultyMappings(client, subjectId, facultyUserIds) {
     [subjectId, normalizedIds]
   );
 
-  await client.query(
-    `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
-     SELECT UNNEST($1::int[]), $2
-     ON CONFLICT (faculty_user_id, subject_id) WHERE faculty_user_id IS NOT NULL DO NOTHING`,
-    [normalizedIds, subjectId]
-  );
+  try {
+    await client.query(
+      `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
+       SELECT UNNEST($1::int[]), $2
+       ON CONFLICT (faculty_user_id, subject_id) WHERE faculty_user_id IS NOT NULL DO NOTHING`,
+      [normalizedIds, subjectId]
+    );
+  } catch (err) {
+    // Fallback for older schemas that do not yet have the expected unique index.
+    if (err.code !== "42P10") {
+      throw err;
+    }
+
+    await client.query(
+      `INSERT INTO faculty_subjects (faculty_user_id, subject_id)
+       SELECT src.faculty_user_id, $2
+       FROM UNNEST($1::int[]) AS src(faculty_user_id)
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM faculty_subjects fs
+         WHERE fs.faculty_user_id = src.faculty_user_id
+           AND fs.subject_id = $2
+       )`,
+      [normalizedIds, subjectId]
+    );
+  }
 }
 
 function normalizeProgramType(value) {
