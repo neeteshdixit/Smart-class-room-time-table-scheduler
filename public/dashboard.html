@@ -94,15 +94,23 @@
         <div class="card section-card mb-4">
           <div class="card-body">
             <form id="generateTimetableForm" class="row g-3 align-items-end">
-              <div class="col-md-4">
+              <div class="col-md-3">
                 <label class="form-label">Semester</label>
                 <select class="form-select" name="semester_id" id="semesterSelect" required></select>
               </div>
-              <div class="col-md-4">
+              <div class="col-md-3">
                 <label class="form-label">Version Name</label>
                 <input type="text" class="form-control" name="version_name" placeholder="OddSem-2026-V1" required />
               </div>
-              <div class="col-md-4">
+              <div class="col-md-3">
+                <label class="form-label">Generation Strategy</label>
+                <select class="form-select" name="generation_strategy">
+                  <option value="balanced" selected>Balanced</option>
+                  <option value="compact">Compact</option>
+                  <option value="faculty_friendly">Faculty Friendly</option>
+                </select>
+              </div>
+              <div class="col-md-3">
                 <div class="d-grid gap-2">
                   <button id="generateBtn" type="submit" class="btn btn-warning">Generate Timetable</button>
                   <button id="simulateBtn" type="submit" class="btn btn-outline-primary" data-simulate="true">

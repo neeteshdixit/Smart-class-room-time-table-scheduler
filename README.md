@@ -148,6 +148,9 @@ Resources:
 - `GET /api/timetable/reports/subject-distribution`
 - `GET /api/timetable/reports/conflicts`
 
+### Faculty View (Read-Only)
+- `GET /api/faculty/timetable`
+
 ## OTP Behavior
 - Login/resend and forgot-password responses include `otp_preview` by default for easier testing.
 - To hide preview in production, set `OTP_PREVIEW_ENABLED=false`.
@@ -170,7 +173,9 @@ Resources:
 - Signup accepts `multipart/form-data` with `profile_photo` file upload.
 - Selected departments are stored in `faculty_departments`.
 - Selected subjects for registered users are stored in `faculty_subjects` using `faculty_user_id`.
-- Login access is restricted to `Admin` role.
+- Login access is available for `Admin` and `Faculty` roles.
+- `POST /api/generate-timetable` and `/api/timetable/*` management endpoints are `Admin` only.
+- Faculty users can only view assigned timetable via `GET /api/faculty/timetable`.
 - Account deletion requires JWT auth + password confirmation and writes an entry in `recent_activity`.
 - Forgot password uses `password_reset_otps` with 5-minute expiry, attempt limiting, and one-time usage.
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).

@@ -15,6 +15,15 @@ if (otpPreview && previewCode) {
   otpPreview.textContent = "OTP preview not received yet. Tap Resend OTP.";
 }
 
+function redirectByRole(userRole) {
+  const normalizedRole = String(userRole || "").trim().toLowerCase();
+  if (normalizedRole === "faculty") {
+    window.location.href = "/faculty-timetable.html";
+    return;
+  }
+  window.location.href = "/dashboard.html";
+}
+
 if (otpForm) {
   otpForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -36,9 +45,9 @@ if (otpForm) {
 
       setAuthToken(result.token);
       sessionStorage.removeItem("otp_preview");
-      showAlert("otpAlert", "OTP verified. Redirecting to dashboard.", "success");
+      showAlert("otpAlert", "OTP verified. Redirecting...", "success");
       setTimeout(() => {
-        window.location.href = "/dashboard.html";
+        redirectByRole(result?.user?.role);
       }, 800);
     } catch (err) {
       showAlert("otpAlert", err.message);

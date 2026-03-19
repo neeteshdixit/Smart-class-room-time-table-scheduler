@@ -1,5 +1,11 @@
 const jwt = require("jsonwebtoken");
 
+function normalizeRole(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
 function authRequired(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
@@ -24,6 +30,20 @@ function authRequired(req, res, next) {
   }
 }
 
+function requireRoles(...roles) {
+  const allowedRoles = [...new Set(roles.map((role) => normalizeRole(role)).filter(Boolean))];
+
+  return (req, res, next) => {
+    const userRole = normalizeRole(req.user?.role);
+    if (!allowedRoles.includes(userRole)) {
+      return res.status(403).json({
+        message: `Access denied. Allowed roles: ${allowedRoles.join(", ").toUpperCase()}`,
+      });
+    }
+    return next();
+  };
+}
+
 function optionalAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
@@ -43,4 +63,4 @@ function optionalAuth(req, res, next) {
   }
 }
 
-module.exports = { authRequired, optionalAuth };
+module.exports = { authRequired, requireRoles, optionalAuth };

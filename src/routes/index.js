@@ -5,6 +5,7 @@ const statsRoutes = require("./statsRoutes");
 const masterDataRoutes = require("./masterDataRoutes");
 const timetableRoutes = require("./timetableRoutes");
 const dashboardDataRoutes = require("./dashboardDataRoutes");
+const facultyRoutes = require("./facultyRoutes");
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ router.use("/profile", profileRoutes);
 router.use("/stats", statsRoutes);
 router.use("/master", masterDataRoutes);
 router.use("/timetable", timetableRoutes);
+router.use("/faculty", facultyRoutes);
 router.use("/", dashboardDataRoutes);
 
 if (Array.isArray(timetableRoutes.generateTimetableMiddleware)) {

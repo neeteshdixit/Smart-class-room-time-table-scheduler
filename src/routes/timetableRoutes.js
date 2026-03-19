@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const { body } = require("express-validator");
 const pool = require("../config/db");
-const { authRequired } = require("../middleware/auth");
+const { authRequired, requireRoles } = require("../middleware/auth");
 const { validateRequest } = require("../utils/validation");
 const { logActivity } = require("../utils/activity");
 
@@ -13,6 +13,12 @@ const DEFAULT_SEMESTER_WEEKS = 16;
 const DEFAULT_SLOT_DURATION_MINUTES = 50;
 const DEFAULT_MAX_WORKLOAD_PER_WEEK = 30;
 const DEFAULT_LAB_BLOCK_MINUTES = 100;
+const LAB_SESSION_SLOT_SPAN = 2;
+const GENERATION_STRATEGY = Object.freeze({
+  BALANCED: "balanced",
+  COMPACT: "compact",
+  FACULTY_FRIENDLY: "faculty_friendly",
+});
 
 function isAdminRole(role) {
   return String(role || "").trim().toLowerCase() === "admin";
@@ -42,6 +48,13 @@ function asNonNegativeInteger(value, fallback = 0) {
     return parsed;
   }
   return fallback;
+}
+
+function normalizeGenerationStrategy(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === GENERATION_STRATEGY.COMPACT) return GENERATION_STRATEGY.COMPACT;
+  if (normalized === GENERATION_STRATEGY.FACULTY_FRIENDLY) return GENERATION_STRATEGY.FACULTY_FRIENDLY;
+  return GENERATION_STRATEGY.BALANCED;
 }
 
 function parseDateToUtcValue(value) {
@@ -818,6 +831,7 @@ async function generateTimetableHandler(req, res, next) {
 
   try {
     const { semester_id: semesterId, version_name: versionName } = req.body;
+    const generationStrategy = normalizeGenerationStrategy(req.body.generation_strategy);
     const simulateOnly =
       req.body.simulation_mode === true || String(req.body.simulation_mode || "").trim().toLowerCase() === "true";
 
@@ -1020,7 +1034,7 @@ async function generateTimetableHandler(req, res, next) {
       DEFAULT_SLOT_DURATION_MINUTES
     );
     const labBlockMinutes = DEFAULT_LAB_BLOCK_MINUTES;
-    const practicalSlotsPerBlock = Math.max(1, Math.ceil(labBlockMinutes / Math.max(1, slotDurationMinutes)));
+    const practicalSlotsPerBlock = LAB_SESSION_SLOT_SPAN;
 
     const subjectById = new Map(subjectsResult.rows.map((subject) => [Number(subject.id), subject]));
     const subjectFacultyMap = new Map();
@@ -1543,7 +1557,7 @@ async function generateTimetableHandler(req, res, next) {
       return false;
     }
 
-    const schedulingProfiles = [
+    const baseSchedulingProfiles = [
       {
         reverseRequestOrder: false,
         preferFailureFirst: false,
@@ -1612,6 +1626,16 @@ async function generateTimetableHandler(req, res, next) {
         ],
       },
     ];
+
+    const profileOrderByStrategy = {
+      [GENERATION_STRATEGY.BALANCED]: [0, 1, 2],
+      [GENERATION_STRATEGY.COMPACT]: [2, 1, 0],
+      [GENERATION_STRATEGY.FACULTY_FRIENDLY]: [1, 0, 2],
+    };
+
+    const schedulingProfiles = (profileOrderByStrategy[generationStrategy] || profileOrderByStrategy.balanced)
+      .map((profileIndex) => baseSchedulingProfiles[profileIndex])
+      .filter(Boolean);
 
     let bestSchedulingResult = null;
     for (const profile of schedulingProfiles) {
@@ -2012,6 +2036,7 @@ async function generateTimetableHandler(req, res, next) {
             ? "Simulation successful. Timetable generation is feasible."
             : "Simulation completed with conflicts.",
         simulation_mode: true,
+        generation_strategy: generationStrategy,
         feasible: conflicts.length === 0,
         assigned_entries: entries.length,
         conflicts_count: conflicts.length,
@@ -2101,6 +2126,7 @@ async function generateTimetableHandler(req, res, next) {
 
     return res.status(201).json({
       message: "Timetable generated",
+      generation_strategy: generationStrategy,
       timetable: {
         ...timetableResult.rows[0],
         total_weeks: totalWeeks,
@@ -2249,18 +2275,20 @@ async function fetchTimetableDetails(timetableId) {
 
 const generateTimetableMiddleware = [
   authRequired,
+  requireRoles("admin"),
   body("semester_id").isInt({ min: 1 }),
   body("version_name").trim().notEmpty(),
+  body("generation_strategy").optional().isIn(["balanced", "compact", "faculty_friendly"]),
   validateRequest,
   generateTimetableHandler,
 ];
 
-const getTimetableHistoryMiddleware = [authRequired, getTimetableHistoryHandler];
+const getTimetableHistoryMiddleware = [authRequired, requireRoles("admin"), getTimetableHistoryHandler];
 
 router.post("/generate", ...generateTimetableMiddleware);
 router.get("/history", ...getTimetableHistoryMiddleware);
 
-router.get("/", authRequired, async (req, res, next) => {
+router.get("/", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const { semester_id: semesterId, timetable_id: timetableId, status } = req.query;
 
@@ -2302,7 +2330,7 @@ router.get("/", authRequired, async (req, res, next) => {
   }
 });
 
-router.get("/:id", authRequired, async (req, res, next) => {
+router.get("/:id", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const timetableId = Number(req.params.id);
     if (!Number.isInteger(timetableId) || timetableId <= 0) {
@@ -2318,7 +2346,7 @@ router.get("/:id", authRequired, async (req, res, next) => {
   }
 });
 
-router.delete("/:id", authRequired, async (req, res, next) => {
+router.delete("/:id", authRequired, requireRoles("admin"), async (req, res, next) => {
   const client = await pool.connect();
   const removedHistoryRows = [];
   let transactionStarted = false;
@@ -2448,6 +2476,7 @@ router.delete("/:id", authRequired, async (req, res, next) => {
 router.post(
   "/:id/approval",
   authRequired,
+  requireRoles("admin"),
   [body("status").isIn(["Approved", "Rejected"]), body("comments").optional().trim(), validateRequest],
   async (req, res, next) => {
     try {
@@ -2483,7 +2512,7 @@ router.post(
   }
 );
 
-router.get("/reports/workload", authRequired, async (req, res, next) => {
+router.get("/reports/workload", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT f.id, f.faculty_id, f.full_name,
@@ -2501,7 +2530,7 @@ router.get("/reports/workload", authRequired, async (req, res, next) => {
   }
 });
 
-router.get("/reports/room-utilization", authRequired, async (req, res, next) => {
+router.get("/reports/room-utilization", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT c.id, c.room_number, c.room_type, c.capacity,
@@ -2518,7 +2547,7 @@ router.get("/reports/room-utilization", authRequired, async (req, res, next) => 
   }
 });
 
-router.get("/reports/subject-distribution", authRequired, async (req, res, next) => {
+router.get("/reports/subject-distribution", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const result = await pool.query(
       `SELECT sec.id AS section_id, sec.section_name, sub.subject_name, sub.subject_code,
@@ -2536,7 +2565,7 @@ router.get("/reports/subject-distribution", authRequired, async (req, res, next)
   }
 });
 
-router.get("/reports/conflicts", authRequired, async (req, res, next) => {
+router.get("/reports/conflicts", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const [facultyConflict, roomConflict, sectionConflict] = await Promise.all([
       pool.query(

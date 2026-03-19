@@ -461,7 +461,20 @@ function renderTimetablePlaceholder(message = "Generate or select a timetable to
   }
 }
 
-function buildTimetableCell(entry) {
+function samePracticalBlock(firstEntry, secondEntry) {
+  if (!firstEntry || !secondEntry) return false;
+  if (String(firstEntry.session_mode || "").toLowerCase() !== "practical") return false;
+  if (String(secondEntry.session_mode || "").toLowerCase() !== "practical") return false;
+
+  return (
+    Number(firstEntry.subject_id) === Number(secondEntry.subject_id) &&
+    Number(firstEntry.section_id) === Number(secondEntry.section_id) &&
+    Number(firstEntry.classroom_id) === Number(secondEntry.classroom_id) &&
+    Number(firstEntry.faculty_id) === Number(secondEntry.faculty_id)
+  );
+}
+
+function buildTimetableCell(entry, colspan = 1) {
   if (!entry) {
     return '<td><div class="timetable-cell text-secondary">-</div></td>';
   }
@@ -470,9 +483,10 @@ function buildTimetableCell(entry) {
   const cellClass = modeToken.includes("practical")
     ? "timetable-cell-practical"
     : "timetable-cell-theory";
+  const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : "";
 
   return `
-    <td class="${cellClass}">
+    <td${colspanAttr} class="${cellClass}">
       <div class="timetable-cell">
         <div class="timetable-cell-code">${escapeHtml(entry.subject_code)}</div>
         <div class="timetable-cell-title">${escapeHtml(entry.subject_name)}</div>
@@ -544,8 +558,8 @@ function renderTimetableGrid(detail, preferredSectionId = null) {
   const timeSlotByDayAndNumber = new Map(
     timeSlots.map((slot) => [`${slot.day_of_week}-${slot.slot_number}`, slot])
   );
-  const entryByTimeslotId = new Map(
-    sectionEntries.map((entry) => [Number(entry.timeslot_id), entry])
+  const entryByDayAndSlot = new Map(
+    sectionEntries.map((entry) => [`${entry.day_of_week}-${entry.slot_number}`, entry])
   );
 
   const headerCells = slotColumns
@@ -566,21 +580,37 @@ function renderTimetableGrid(detail, preferredSectionId = null) {
   const dayRows = workingDayNumbers
     .map((dayNumber) => ({ id: dayNumber, label: dayOfWeekShortLabel(dayNumber) }))
     .map((day) => {
-      const cells = slotColumns
-        .map((slot, index) => {
-          const daySlot = timeSlotByDayAndNumber.get(`${day.id}-${slot.slot_number}`);
-          const entry = daySlot ? entryByTimeslotId.get(Number(daySlot.id)) : null;
-          const cellHtml = buildTimetableCell(entry);
-          if (breakInsertIndex > 0 && index === breakInsertIndex - 1) {
-            return `${cellHtml}<td class="timetable-lunch-col">BREAK</td>`;
+      const cells = [];
+      for (let slotIndex = 0; slotIndex < slotColumns.length; slotIndex += 1) {
+        const slot = slotColumns[slotIndex];
+        const daySlot = timeSlotByDayAndNumber.get(`${day.id}-${slot.slot_number}`);
+        const entry = daySlot ? entryByDayAndSlot.get(`${day.id}-${slot.slot_number}`) || null : null;
+
+        let consumedSpan = 1;
+        if (entry && String(entry.session_mode || "").toLowerCase() === "practical") {
+          const nextSlot = slotColumns[slotIndex + 1];
+          if (nextSlot) {
+            const nextEntry = entryByDayAndSlot.get(`${day.id}-${nextSlot.slot_number}`) || null;
+            if (samePracticalBlock(entry, nextEntry)) {
+              consumedSpan = 2;
+            }
           }
-          return cellHtml;
-        })
-        .join("");
+        }
+
+        cells.push(buildTimetableCell(entry, consumedSpan));
+
+        if (breakInsertIndex > 0 && slotIndex === breakInsertIndex - 1) {
+          cells.push('<td class="timetable-lunch-col">BREAK</td>');
+        }
+
+        if (consumedSpan > 1) {
+          slotIndex += consumedSpan - 1;
+        }
+      }
       return `
         <tr>
           <td class="timetable-day-col">${escapeHtml(day.label)}</td>
-          ${cells}
+          ${cells.join("")}
         </tr>
       `;
     })
@@ -1953,6 +1983,7 @@ if (generateForm && generateBtn && generationResult) {
               : "Timetable generated."
           )} Assigned entries: <strong>${escapeHtml(result.assigned_entries)}</strong>,
           Conflicts: <strong>${escapeHtml(result.conflicts_count)}</strong>.
+          <div class="small mt-1">Strategy: <strong>${escapeHtml(result.generation_strategy || payload.generation_strategy || "balanced")}</strong></div>
           ${
             result.simulation_mode
               ? ""
@@ -2160,4 +2191,8 @@ async function initializeDashboard() {
   setInterval(refreshSummaryCounts, 30000);
 }
 
-initializeDashboard();
+if (!isAdminUser()) {
+  window.location.replace("/faculty-timetable.html");
+} else {
+  initializeDashboard();
+}

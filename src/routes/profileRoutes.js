@@ -52,7 +52,6 @@ router.put(
     body("address").optional().trim().notEmpty(),
     body("joining_date").optional().isISO8601(),
     body("profile_photo_url").optional().trim(),
-    body("role").optional().trim().notEmpty(),
     body("employee_type").optional().trim().notEmpty(),
     body("office_location").optional().trim(),
     validateRequest,
@@ -72,7 +71,6 @@ router.put(
         "address",
         "joining_date",
         "profile_photo_url",
-        "role",
         "employee_type",
         "office_location",
       ];

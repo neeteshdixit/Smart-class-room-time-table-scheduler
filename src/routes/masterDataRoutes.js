@@ -1,6 +1,6 @@
 const express = require("express");
 const pool = require("../config/db");
-const { authRequired } = require("../middleware/auth");
+const { authRequired, requireRoles } = require("../middleware/auth");
 const { logActivity } = require("../utils/activity");
 
 const router = express.Router();
@@ -166,7 +166,7 @@ function isManualTimeSlotResource(resource) {
   return resource === "time-slots";
 }
 
-router.get("/:resource", authRequired, async (req, res, next) => {
+router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const config = getConfig(req.params.resource);
     if (!config) {
@@ -199,7 +199,7 @@ router.get("/:resource", authRequired, async (req, res, next) => {
   }
 });
 
-router.post("/:resource", authRequired, async (req, res, next) => {
+router.post("/:resource", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const config = getConfig(req.params.resource);
     if (!config) {
@@ -253,7 +253,7 @@ router.post("/:resource", authRequired, async (req, res, next) => {
   }
 });
 
-router.put("/:resource/:id", authRequired, async (req, res, next) => {
+router.put("/:resource/:id", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const config = getConfig(req.params.resource);
     if (!config) {
@@ -301,7 +301,7 @@ router.put("/:resource/:id", authRequired, async (req, res, next) => {
   }
 });
 
-router.delete("/:resource/:id", authRequired, async (req, res, next) => {
+router.delete("/:resource/:id", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const config = getConfig(req.params.resource);
     if (!config) {

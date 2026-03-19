@@ -1,6 +1,6 @@
 const express = require("express");
 const pool = require("../config/db");
-const { authRequired } = require("../middleware/auth");
+const { authRequired, requireRoles } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ async function getCount(tableName) {
   return result.rows[0].total;
 }
 
-router.get("/", authRequired, async (req, res, next) => {
+router.get("/", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
     const includeActivity = String(req.query.include_activity || "false").toLowerCase() === "true";
 

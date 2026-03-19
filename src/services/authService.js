@@ -72,8 +72,8 @@ function shouldIncludeOtpPreview() {
   if (raw) {
     return isTruthyEnvFlag(raw);
   }
-  // Default enabled so OTP flow remains testable when no SMS gateway is wired.
-  return true;
+  // Default disabled in production, enabled elsewhere for easier local testing.
+  return String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production";
 }
 
 function normalizeRole(inputRole) {
@@ -346,8 +346,11 @@ async function login(payload) {
     throw buildError(401, "Invalid credentials");
   }
 
-  if (String(user.role || "").toLowerCase() !== "admin") {
-    throw buildError(403, "Faculty can only register. Login access is allowed for Admin only.");
+  const normalizedRole = String(user.role || "")
+    .trim()
+    .toLowerCase();
+  if (normalizedRole !== "admin" && normalizedRole !== "faculty") {
+    throw buildError(403, "Login is allowed for Admin and Faculty roles only.");
   }
 
   const otpCode = generateOtp(6);
@@ -361,6 +364,7 @@ async function login(payload) {
 
   return {
     message: "Credentials verified. OTP sent to your registered mobile number.",
+    role: normalizedRole.toUpperCase(),
     login_token: loginToken,
     mobile_number_masked: maskMobileNumber(user.mobile_number),
     otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
@@ -463,21 +467,29 @@ async function forgotPassword(payload) {
   await deleteResetOtpsByUser(user.id);
   await createPasswordResetOtp(user.id, user.email, otpCode, expiryMinutes);
 
+  let emailDelivery = "sent";
   try {
     await sendPasswordResetOtpEmail(user.email, otpCode);
   } catch (err) {
-    await deleteResetOtpsByUser(user.id);
-    if (err.statusCode) {
-      throw err;
+    if (!shouldIncludeOtpPreview()) {
+      await deleteResetOtpsByUser(user.id);
+      if (err.statusCode) {
+        throw err;
+      }
+      throw buildError(500, "Unable to send OTP email right now. Please try again.");
     }
-    throw buildError(500, "Unable to send OTP email right now. Please try again.");
+    emailDelivery = "preview_only";
   }
 
   await logActivity(user.id, "Forgot Password Requested", "Password reset OTP sent to registered email");
 
   return {
-    message: "OTP sent to your registered email",
+    message:
+      emailDelivery === "sent"
+        ? "OTP sent to your registered email"
+        : "SMTP delivery failed. OTP generated in preview mode for development.",
     email: user.email,
+    delivery: emailDelivery,
     otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }

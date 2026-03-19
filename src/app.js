@@ -14,12 +14,38 @@ function normalizePublicApiBase(value) {
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
+function parseCorsOrigins(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw === "*") {
+    return { allowAll: true, origins: [] };
+  }
+  const origins = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return { allowAll: origins.includes("*"), origins };
+}
+
+function buildCorsOptions() {
+  const configured = parseCorsOrigins(process.env.CORS_ORIGIN);
+
+  return {
+    origin(origin, callback) {
+      if (!origin || configured.allowAll || configured.origins.includes(origin)) {
+        return callback(null, true);
+      }
+      if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS blocked for origin: ${origin}`));
+    },
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  };
+}
+
 app.use(helmet({ crossOriginResourcePolicy: false }));
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN || "*",
-  })
-);
+app.use(cors(buildCorsOptions()));
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
@@ -49,6 +75,10 @@ app.get("/login", (req, res) => {
 
 app.get("/dashboard", (req, res) => {
   res.sendFile(path.join(__dirname, "..", "public", "dashboard.html"));
+});
+
+app.get("/faculty-timetable", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "faculty-timetable.html"));
 });
 
 app.get("/profile", (req, res) => {

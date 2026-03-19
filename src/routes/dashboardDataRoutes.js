@@ -19,6 +19,15 @@ function ensureAdmin(req, res) {
   return false;
 }
 
+function dashboardAdminRequired(req, res, next) {
+  return authRequired(req, res, () => {
+    if (!isAdminRole(req.user?.role)) {
+      return res.status(403).json({ message: "Only admin can access dashboard management APIs." });
+    }
+    return next();
+  });
+}
+
 function parsePagination(query) {
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
@@ -329,6 +338,9 @@ router.post("/logout", authRequired, async (req, res, next) => {
     return next(err);
   }
 });
+
+// All remaining dashboard data endpoints are admin-only.
+router.use(dashboardAdminRequired);
 
 router.get("/activity-log", authRequired, async (req, res, next) => {
   try {

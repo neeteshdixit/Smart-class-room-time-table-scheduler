@@ -280,19 +280,12 @@ if (signupForm) {
     signupBtn.textContent = "Registering...";
 
     try {
-      const endpoint = roleValue === "ADMIN" ? "/api/auth/admin-signup" : "/api/auth/signup";
-      const response = await fetch(endpoint, {
+      const endpoint = roleValue === "ADMIN" ? "/auth/admin-signup" : "/auth/signup";
+      await apiRequest(endpoint, {
         method: "POST",
         headers: buildAuthHeader(),
         body: formData,
       });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const error = new Error(data.message || "Signup failed");
-        error.validationErrors = Array.isArray(data.errors) ? data.errors : [];
-        throw error;
-      }
 
       showAlert("signupAlert", "Registration successful.", "success");
       signupForm.reset();
