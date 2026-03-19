@@ -8,6 +8,7 @@ function firstNonEmpty(values) {
   return "";
 }
 
+
 function buildConnectionStringFromParts() {
   const host = String(process.env.PGHOST || "").trim();
   const port = String(process.env.PGPORT || "5432").trim();
