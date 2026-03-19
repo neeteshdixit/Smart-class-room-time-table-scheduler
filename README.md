@@ -46,6 +46,8 @@ npm install
 copy .env.example .env
 ```
 
+Important: keep `.env` local only (do not commit it). In Render/production, set env vars in the platform dashboard.
+
 3. Create PostgreSQL database (example):
 ```sql
 CREATE DATABASE smart_scheduler;
