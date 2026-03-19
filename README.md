@@ -94,6 +94,8 @@ CORS_ORIGIN=*
 `PUBLIC_API_BASE_URL` is optional. Set it when frontend and backend run on different domains, e.g.
 `https://your-backend-domain.com/api`.
 
+For Render deployment, set `DATABASE_URL` in the Render service environment (do not rely on repo `.env`).
+
 ## Core APIs
 
 ### Authentication
