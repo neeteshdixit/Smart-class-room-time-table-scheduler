@@ -1,4 +1,9 @@
-require("dotenv").config();
+const shouldLoadDotenv =
+  process.env.NODE_ENV !== "production" && String(process.env.RENDER || "").toLowerCase() !== "true";
+
+if (shouldLoadDotenv) {
+  require("dotenv").config();
+}
 const app = require("./src/app");
 const pool = require("./src/config/db");
 const { initializeSchema } = require("./src/db/initializeSchema");
