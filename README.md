@@ -85,8 +85,12 @@ SMTP_TIMEOUT_MS=15000
 SMTP_USER=your_smtp_user@example.com
 SMTP_PASS=your_smtp_password
 SMTP_FROM=no-reply@example.com
+PUBLIC_API_BASE_URL=
 CORS_ORIGIN=*
 ```
+
+`PUBLIC_API_BASE_URL` is optional. Set it when frontend and backend run on different domains, e.g.
+`https://your-backend-domain.com/api`.
 
 ## Core APIs
 
@@ -149,6 +153,11 @@ Resources:
 - Ensure outbound SMTP is allowed from your host/network (typically port `587` or `465`).
 - For Gmail SMTP, use an App Password in `SMTP_PASS` with 2-step verification enabled.
 - If your Gmail App Password is copied with spaces (e.g. `abcd efgh ijkl mnop`), it is normalized automatically.
+
+## Deployment Troubleshooting
+- If UI shows `Request failed` or `API route not found (404)`, open the failed request URL in browser devtools and verify it points to your backend, not only your frontend host.
+- In split deployment (frontend + backend different domains), set `PUBLIC_API_BASE_URL` on backend and redeploy so `/runtime-config.js` provides the correct API base to all pages.
+- If forgot-password specifically fails with `502/503/504`, check SMTP env vars and outbound SMTP/network restrictions on your hosting provider.
 
 ## Notes
 - Roles supported: `ADMIN`, `FACULTY`, `USER`.

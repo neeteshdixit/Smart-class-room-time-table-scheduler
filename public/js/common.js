@@ -3,7 +3,6 @@ const API_BASE_STORAGE_KEY = "api_base_url";
 const AUTH_STORAGE_KEY = "auth_token";
 const LOGIN_PAGE_PATH = "/login";
 const AUTH_TOKEN_KEYS = [AUTH_STORAGE_KEY, "token", "jwt", "jwt_token", "access_token"];
-let activeApiBase = localStorage.getItem(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE;
 
 function normalizeApiBase(value) {
   const base = String(value || "").trim();
@@ -11,9 +10,29 @@ function normalizeApiBase(value) {
   return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
+function readQueryApiBase() {
+  try {
+    const value = new URLSearchParams(window.location.search).get("api_base_url");
+    if (value) {
+      return normalizeApiBase(value);
+    }
+  } catch (err) {
+    // ignore malformed URL/query parsing errors
+  }
+
+  return "";
+}
+
+const queryApiBase = readQueryApiBase();
+let activeApiBase = queryApiBase || localStorage.getItem(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE;
+if (queryApiBase) {
+  localStorage.setItem(API_BASE_STORAGE_KEY, queryApiBase);
+}
+
 function readRuntimeApiBase() {
   try {
-    const fromWindow = window.API_BASE_URL || window.__API_BASE_URL__;
+    const fromWindow =
+      window.API_BASE_URL || window.__API_BASE_URL__ || window.__RUNTIME_CONFIG__?.apiBaseUrl;
     if (fromWindow) return normalizeApiBase(fromWindow);
 
     const metaTag = document.querySelector('meta[name="api-base-url"]');
@@ -71,6 +90,41 @@ function buildApiUrl(apiBase, endpoint) {
   return `${normalizeApiBase(apiBase)}${path}`;
 }
 
+async function parseApiResponseBody(response) {
+  const text = await response.text().catch(() => "");
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    return { _rawText: text };
+  }
+}
+
+function looksLikeHtml(text) {
+  return /<\/?[a-z][\s\S]*>/i.test(String(text || "").slice(0, 200));
+}
+
+function getFallbackErrorMessage(response, parsedBody, requestUrl) {
+  const apiMessage = String(parsedBody?.message || "").trim();
+  if (apiMessage) return apiMessage;
+
+  const rawText = String(parsedBody?._rawText || "").trim();
+  if (rawText && !looksLikeHtml(rawText)) {
+    return rawText.slice(0, 220);
+  }
+
+  if (response.status === 404) {
+    return `API route not found (404) for ${requestUrl}. Check deployed API base URL.`;
+  }
+
+  if ([502, 503, 504].includes(response.status)) {
+    return `API gateway error (${response.status}). Check backend health, SMTP settings, and network/firewall rules.`;
+  }
+
+  return `Request failed (${response.status})`;
+}
+
 function getAuthToken() {
   return localStorage.getItem(AUTH_STORAGE_KEY);
 }
@@ -99,10 +153,11 @@ async function apiRequest(endpoint, options = {}) {
   for (let index = 0; index < candidates.length; index += 1) {
     const base = candidates[index];
     const isLast = index === candidates.length - 1;
+    const requestUrl = buildApiUrl(base, endpoint);
 
     try {
-      const response = await fetch(buildApiUrl(base, endpoint), options);
-      const data = await response.json().catch(() => ({}));
+      const response = await fetch(requestUrl, options);
+      const data = await parseApiResponseBody(response);
 
       if (response.ok) {
         setActiveApiBase(base);
@@ -114,11 +169,12 @@ async function apiRequest(endpoint, options = {}) {
         continue;
       }
 
-      const message = data.message || "Request failed";
+      const message = getFallbackErrorMessage(response, data, requestUrl);
       const error = new Error(message);
       error.validationErrors = Array.isArray(data.errors) ? data.errors : [];
       error.responseData = data;
       error.status = response.status;
+      error.apiBase = base;
       throw error;
     } catch (error) {
       lastError = error;
@@ -131,7 +187,7 @@ async function apiRequest(endpoint, options = {}) {
 
   if (lastError?.name === "TypeError") {
     throw new Error(
-      "Unable to reach the server. Check backend status, API base URL, CORS, and network/firewall settings."
+      "Unable to reach the server. Check backend status, API base URL, CORS, HTTPS/mixed-content rules, and firewall settings."
     );
   }
 

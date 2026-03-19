@@ -8,6 +8,12 @@ const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
+function normalizePublicApiBase(value) {
+  const base = String(value || "").trim();
+  if (!base) return "";
+  return base.endsWith("/") ? base.slice(0, -1) : base;
+}
+
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(
   cors({
@@ -17,6 +23,17 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+
+app.get("/runtime-config.js", (req, res) => {
+  const apiBaseUrl = normalizePublicApiBase(process.env.PUBLIC_API_BASE_URL);
+  const payload = JSON.stringify({ apiBaseUrl });
+
+  res.type("application/javascript");
+  res.set("Cache-Control", "no-store");
+  res.send(
+    `window.__RUNTIME_CONFIG__ = ${payload};\nwindow.__API_BASE_URL__ = window.__RUNTIME_CONFIG__.apiBaseUrl || window.__API_BASE_URL__ || "";\n`
+  );
+});
 
 app.use(express.static(path.join(__dirname, "..", "public")));
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
