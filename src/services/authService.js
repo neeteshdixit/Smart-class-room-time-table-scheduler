@@ -73,7 +73,7 @@ function shouldIncludeOtpPreview() {
     return isTruthyEnvFlag(raw);
   }
   // Default disabled in production, enabled elsewhere for easier local testing.
-  return String(process.env.NODE_ENV || "").trim().toLowerCase() !== "development";
+  return String(process.env.NODE_ENV || "").trim().toLowerCase() === "development";
 }
 
 function normalizeRole(inputRole) {
