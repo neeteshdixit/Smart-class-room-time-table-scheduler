@@ -574,6 +574,7 @@ const ISSUE_LABELS = Object.freeze({
   missing_faculty_mapping: "Missing Faculty Mapping",
   missing_department_assignment: "Missing Department Assignment",
   missing_workload_limit: "Missing Workload Limit",
+  invalid_faculty_override: "Invalid Faculty Override",
   missing_working_hours: "Department Working Hours Not Configured",
   working_days_not_configured: "Working Days Not Configured",
   no_classroom_available: "No Classroom Available",
@@ -701,6 +702,9 @@ function resolveValidationFailureMessage(groups) {
   if (firstGroup.key === "missing_department_assignment") {
     return `Faculty '${firstItem}' has no department assigned.`;
   }
+  if (firstGroup.key === "invalid_faculty_override") {
+    return `Invalid faculty override: ${firstItem}`;
+  }
   if (firstGroup.key === "missing_working_hours") {
     return "Department working hours are not configured.";
   }
@@ -732,6 +736,10 @@ function asNonNegativeNumber(value, fallback = 0) {
     return parsed;
   }
   return fallback;
+}
+
+function toSectionSubjectKey(sectionId, subjectId) {
+  return `${Number(sectionId)}::${Number(subjectId)}`;
 }
 
 async function ensureFacultyDirectoryRowsForSemesterMappings(client, semesterId) {
@@ -832,6 +840,9 @@ async function generateTimetableHandler(req, res, next) {
   try {
     const { semester_id: semesterId, version_name: versionName } = req.body;
     const generationStrategy = normalizeGenerationStrategy(req.body.generation_strategy);
+    const rawFacultyAssignmentOverrides = Array.isArray(req.body.faculty_assignment_overrides)
+      ? req.body.faculty_assignment_overrides
+      : [];
     const simulateOnly =
       req.body.simulation_mode === true || String(req.body.simulation_mode || "").trim().toLowerCase() === "true";
 
@@ -908,6 +919,7 @@ async function generateTimetableHandler(req, res, next) {
        FROM classrooms
        ORDER BY room_number, id`
     );
+    const hasSubjectFacultyAssignmentTable = await tableExists(client, "subject_faculty_assignment");
 
     const configuredWorkingDays =
       departmentScheduleResult.rowCount > 0 ? resolveWorkingDays(departmentScheduleResult.rows[0].working_days) : [];
@@ -1036,9 +1048,11 @@ async function generateTimetableHandler(req, res, next) {
     const labBlockMinutes = DEFAULT_LAB_BLOCK_MINUTES;
     const practicalSlotsPerBlock = LAB_SESSION_SLOT_SPAN;
 
+    const sectionById = new Map(sectionsResult.rows.map((section) => [Number(section.id), section]));
     const subjectById = new Map(subjectsResult.rows.map((subject) => [Number(subject.id), subject]));
     const subjectFacultyMap = new Map();
     const facultyWorkloadMap = new Map();
+    const initialFacultyAssignmentMap = new Map();
 
     mappingResult.rows.forEach((row) => {
       const subjectId = Number(row.subject_id);
@@ -1092,11 +1106,156 @@ async function generateTimetableHandler(req, res, next) {
       }
     });
 
+    const sectionIdsInScope = sectionsResult.rows
+      .map((section) => Number(section.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    const subjectIdsInScope = subjectsResult.rows
+      .map((subject) => Number(subject.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+
+    if (hasSubjectFacultyAssignmentTable && sectionIdsInScope.length > 0 && subjectIdsInScope.length > 0) {
+      const persistedAssignmentsResult = await client.query(
+        `SELECT section_id, subject_id, faculty_id
+         FROM subject_faculty_assignment
+         WHERE section_id = ANY($1::int[])
+           AND subject_id = ANY($2::int[])`,
+        [sectionIdsInScope, subjectIdsInScope]
+      );
+
+      persistedAssignmentsResult.rows.forEach((row) => {
+        const sectionId = Number(row.section_id);
+        const subjectId = Number(row.subject_id);
+        const facultyId = Number(row.faculty_id);
+        const key = toSectionSubjectKey(sectionId, subjectId);
+        const candidates = subjectFacultyMap.get(subjectId) || [];
+        const isCandidate = candidates.some((candidate) => Number(candidate.faculty_id) === facultyId);
+        if (!isCandidate) return;
+        if (!facultyWorkloadMap.has(facultyId)) return;
+        initialFacultyAssignmentMap.set(key, facultyId);
+      });
+    }
+
+    function rankFacultyCandidatesForPreassignment(candidates, facultyUsageMap) {
+      return [...candidates].sort((a, b) => {
+        const aUsage = Number(facultyUsageMap.get(Number(a.faculty_id)) || 0);
+        const bUsage = Number(facultyUsageMap.get(Number(b.faculty_id)) || 0);
+        const aWorkload = facultyWorkloadMap.get(Number(a.faculty_id)) || { max: 0 };
+        const bWorkload = facultyWorkloadMap.get(Number(b.faculty_id)) || { max: 0 };
+        const aRatio = aWorkload.max > 0 ? aUsage / aWorkload.max : Number.POSITIVE_INFINITY;
+        const bRatio = bWorkload.max > 0 ? bUsage / bWorkload.max : Number.POSITIVE_INFINITY;
+
+        if (aRatio !== bRatio) return aRatio - bRatio;
+        if (aUsage !== bUsage) return aUsage - bUsage;
+        return String(a.faculty_name || "").localeCompare(String(b.faculty_name || ""));
+      });
+    }
+
+    const preassignmentUsageMap = new Map();
+    initialFacultyAssignmentMap.forEach((facultyId) => {
+      const normalizedFacultyId = Number(facultyId);
+      preassignmentUsageMap.set(normalizedFacultyId, (preassignmentUsageMap.get(normalizedFacultyId) || 0) + 1);
+    });
+
+    if (rawFacultyAssignmentOverrides.length > 0) {
+      rawFacultyAssignmentOverrides.forEach((override, index) => {
+        const itemLabel = `item #${index + 1}`;
+        const sectionId = Number(override?.section_id);
+        const subjectId = Number(override?.subject_id);
+        const facultyId = Number(override?.faculty_id);
+
+        if (
+          !Number.isInteger(sectionId) ||
+          sectionId <= 0 ||
+          !Number.isInteger(subjectId) ||
+          subjectId <= 0 ||
+          !Number.isInteger(facultyId) ||
+          facultyId <= 0
+        ) {
+          addIssue(issues, "invalid_faculty_override", `${itemLabel} must include valid section_id, subject_id, and faculty_id`);
+          return;
+        }
+
+        const section = sectionById.get(sectionId);
+        if (!section) {
+          addIssue(issues, "invalid_faculty_override", `${itemLabel} references section_id=${sectionId} which is outside this timetable scope`);
+          return;
+        }
+
+        const subject = subjectById.get(subjectId);
+        if (!subject) {
+          addIssue(issues, "invalid_faculty_override", `${itemLabel} references subject_id=${subjectId} which is outside this timetable scope`);
+          return;
+        }
+
+        const subjectFacultyCandidates = subjectFacultyMap.get(subjectId) || [];
+        const matchedFaculty = subjectFacultyCandidates.find((candidate) => Number(candidate.faculty_id) === facultyId);
+        if (!matchedFaculty) {
+          addIssue(
+            issues,
+            "invalid_faculty_override",
+            `${section.section_name} - ${subject.subject_name}: faculty_id=${facultyId} is not mapped to this subject`
+          );
+          return;
+        }
+
+        if (!facultyWorkloadMap.has(facultyId)) {
+          addIssue(
+            issues,
+            "invalid_faculty_override",
+            `${section.section_name} - ${subject.subject_name}: faculty_id=${facultyId} has invalid workload/department setup`
+          );
+          return;
+        }
+
+        const assignmentKey = toSectionSubjectKey(sectionId, subjectId);
+        const previousFacultyId = Number(initialFacultyAssignmentMap.get(assignmentKey) || 0);
+        if (previousFacultyId > 0) {
+          const previousCount = Number(preassignmentUsageMap.get(previousFacultyId) || 0);
+          if (previousCount > 1) {
+            preassignmentUsageMap.set(previousFacultyId, previousCount - 1);
+          } else {
+            preassignmentUsageMap.delete(previousFacultyId);
+          }
+        }
+
+        preassignmentUsageMap.set(facultyId, (preassignmentUsageMap.get(facultyId) || 0) + 1);
+        initialFacultyAssignmentMap.set(toSectionSubjectKey(sectionId, subjectId), matchedFaculty.faculty_id);
+      });
+    }
+
+    // Build complete section-subject -> faculty map before scheduling.
+    sectionsResult.rows.forEach((section) => {
+      subjectsResult.rows.forEach((subject) => {
+        const sectionId = Number(section.id);
+        const subjectId = Number(subject.id);
+        const assignmentKey = toSectionSubjectKey(sectionId, subjectId);
+        if (initialFacultyAssignmentMap.has(assignmentKey)) {
+          return;
+        }
+
+        const candidates = subjectFacultyMap.get(subjectId) || [];
+        if (candidates.length === 0) {
+          return;
+        }
+
+        const rankedCandidates = rankFacultyCandidatesForPreassignment(candidates, preassignmentUsageMap);
+        const selectedFaculty = rankedCandidates[0];
+        if (!selectedFaculty) {
+          return;
+        }
+
+        const selectedFacultyId = Number(selectedFaculty.faculty_id);
+        initialFacultyAssignmentMap.set(assignmentKey, selectedFacultyId);
+        preassignmentUsageMap.set(selectedFacultyId, (preassignmentUsageMap.get(selectedFacultyId) || 0) + 1);
+      });
+    });
+
     if (
       subjectsResult.rowCount > 0 &&
       issues.missing_faculty_mapping.size === 0 &&
       issues.missing_department_assignment.size === 0 &&
-      issues.missing_workload_limit.size === 0
+      issues.missing_workload_limit.size === 0 &&
+      issues.invalid_faculty_override.size === 0
     ) {
       precheckStatus.faculty_mapped = true;
     }
@@ -1281,7 +1440,12 @@ async function generateTimetableHandler(req, res, next) {
 
     function tryAssignRequest(request, options, schedulingState) {
       const { section, subject, mode, preferred_day: preferredDay } = request;
-      const facultyCandidates = subjectFacultyMap.get(subject.id) || [];
+      const assignmentKey = toSectionSubjectKey(section.id, subject.id);
+      const subjectFacultyCandidates = subjectFacultyMap.get(subject.id) || [];
+      const preAssignedFacultyId = schedulingState.facultyAssignmentMap.get(assignmentKey);
+      const facultyCandidates = preAssignedFacultyId
+        ? subjectFacultyCandidates.filter((candidate) => Number(candidate.faculty_id) === Number(preAssignedFacultyId))
+        : subjectFacultyCandidates;
       const rooms = roomCandidatesFor(mode, section.student_strength, options);
       const counters = {
         [CONFLICT_REASON.SECTION_CLASH]: 0,
@@ -1347,6 +1511,9 @@ async function generateTimetableHandler(req, res, next) {
               schedulingState.roomSlotUsed.add(`${room.id}-${slot.id}`);
             });
             load.assigned += slotGroup.length;
+            if (!schedulingState.facultyAssignmentMap.has(assignmentKey)) {
+              schedulingState.facultyAssignmentMap.set(assignmentKey, facultyId);
+            }
 
             schedulingState.entries.push(
               ...slotGroup.map((slot) => ({
@@ -1464,6 +1631,7 @@ async function generateTimetableHandler(req, res, next) {
         roomSlotUsed: new Set(),
         sectionSlotUsed: new Set(),
         facultyLoadState: createFacultyLoadState(),
+        facultyAssignmentMap: new Map(initialFacultyAssignmentMap),
         entries: [],
         assignedRequestCountByKey: new Map(),
       };
@@ -1655,6 +1823,7 @@ async function generateTimetableHandler(req, res, next) {
         roomSlotUsed: new Set(),
         sectionSlotUsed: new Set(),
         facultyLoadState: createFacultyLoadState(),
+        facultyAssignmentMap: new Map(initialFacultyAssignmentMap),
         entries: [],
         assignedRequestCountByKey: new Map(),
       };
@@ -1948,6 +2117,45 @@ async function generateTimetableHandler(req, res, next) {
       });
     }
 
+    const sectionSubjectFacultySet = new Map();
+    entries.forEach((entry) => {
+      const key = toSectionSubjectKey(entry.section_id, entry.subject_id);
+      if (!sectionSubjectFacultySet.has(key)) {
+        sectionSubjectFacultySet.set(key, new Set());
+      }
+      sectionSubjectFacultySet.get(key).add(Number(entry.faculty_id));
+    });
+
+    const inconsistentFacultyAssignments = [];
+    sectionSubjectFacultySet.forEach((facultyIds, key) => {
+      if (facultyIds.size <= 1) return;
+      const [sectionIdText, subjectIdText] = key.split("::");
+      const sectionId = Number(sectionIdText);
+      const subjectId = Number(subjectIdText);
+      const sectionName = String(sectionById.get(sectionId)?.section_name || `Section#${sectionId}`);
+      const subjectName = String(subjectById.get(subjectId)?.subject_name || `Subject#${subjectId}`);
+      inconsistentFacultyAssignments.push({
+        section_id: sectionId,
+        section_name: sectionName,
+        subject_id: subjectId,
+        subject_name: subjectName,
+        faculty_ids: [...facultyIds],
+      });
+    });
+
+    if (inconsistentFacultyAssignments.length > 0) {
+      const firstInconsistency = inconsistentFacultyAssignments[0];
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: `Faculty consistency violation for ${firstInconsistency.section_name} - ${firstInconsistency.subject_name}`,
+        precheck_summary: buildPrecheckSummary(precheckStatus),
+        assigned_entries: entries.length,
+        conflicts_count: conflicts.length,
+        conflicts,
+        inconsistent_faculty_assignments: inconsistentFacultyAssignments,
+      });
+    }
+
     const uniqueAssignedRoomIds = [...new Set(entries.map((entry) => Number(entry.classroom_id)).filter((id) => Number.isInteger(id) && id > 0))];
     const roomValidationResult = uniqueAssignedRoomIds.length
       ? await client.query(
@@ -2081,6 +2289,30 @@ async function generateTimetableHandler(req, res, next) {
         values.push(entry.slot_number);
       }
       await client.query(insertEntrySql, values);
+    }
+
+    if (hasSubjectFacultyAssignmentTable) {
+      const assignmentRowsByKey = new Map();
+      entries.forEach((entry) => {
+        const key = toSectionSubjectKey(entry.section_id, entry.subject_id);
+        if (!assignmentRowsByKey.has(key)) {
+          assignmentRowsByKey.set(key, {
+            section_id: Number(entry.section_id),
+            subject_id: Number(entry.subject_id),
+            faculty_id: Number(entry.faculty_id),
+          });
+        }
+      });
+
+      for (const assignment of assignmentRowsByKey.values()) {
+        await client.query(
+          `INSERT INTO subject_faculty_assignment (section_id, subject_id, faculty_id)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (section_id, subject_id)
+           DO UPDATE SET faculty_id = EXCLUDED.faculty_id`,
+          [assignment.section_id, assignment.subject_id, assignment.faculty_id]
+        );
+      }
     }
 
     const sessionModeSelect = hasSessionModeColumn
@@ -2279,6 +2511,7 @@ const generateTimetableMiddleware = [
   body("semester_id").isInt({ min: 1 }),
   body("version_name").trim().notEmpty(),
   body("generation_strategy").optional().isIn(["balanced", "compact", "faculty_friendly"]),
+  body("faculty_assignment_overrides").optional().isArray(),
   validateRequest,
   generateTimetableHandler,
 ];
@@ -2567,7 +2800,7 @@ router.get("/reports/subject-distribution", authRequired, requireRoles("admin"),
 
 router.get("/reports/conflicts", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
-    const [facultyConflict, roomConflict, sectionConflict] = await Promise.all([
+    const [facultyConflict, roomConflict, sectionConflict, subjectFacultyConflict] = await Promise.all([
       pool.query(
         `SELECT timetable_id, faculty_id, timeslot_id, COUNT(*)::int AS conflict_count
          FROM timetable_entries
@@ -2586,14 +2819,27 @@ router.get("/reports/conflicts", authRequired, requireRoles("admin"), async (req
          GROUP BY timetable_id, section_id, timeslot_id
          HAVING COUNT(*) > 1`
       ),
+      pool.query(
+        `SELECT te.timetable_id, te.section_id, sec.section_name, te.subject_id, sub.subject_name,
+                COUNT(DISTINCT te.faculty_id)::int AS faculty_count
+         FROM timetable_entries te
+         JOIN sections sec ON sec.id = te.section_id
+         JOIN subjects sub ON sub.id = te.subject_id
+         GROUP BY te.timetable_id, te.section_id, sec.section_name, te.subject_id, sub.subject_name
+         HAVING COUNT(DISTINCT te.faculty_id) > 1`
+      ),
     ]);
 
     return res.json({
       faculty_conflicts: facultyConflict.rows,
       classroom_conflicts: roomConflict.rows,
       section_conflicts: sectionConflict.rows,
+      section_subject_faculty_conflicts: subjectFacultyConflict.rows,
       has_conflicts:
-        facultyConflict.rowCount > 0 || roomConflict.rowCount > 0 || sectionConflict.rowCount > 0,
+        facultyConflict.rowCount > 0 ||
+        roomConflict.rowCount > 0 ||
+        sectionConflict.rowCount > 0 ||
+        subjectFacultyConflict.rowCount > 0,
     });
   } catch (err) {
     return next(err);

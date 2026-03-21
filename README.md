@@ -148,6 +148,14 @@ Resources:
 - `GET /api/timetable/reports/subject-distribution`
 - `GET /api/timetable/reports/conflicts`
 
+`POST /api/timetable/generate` supports optional `faculty_assignment_overrides`:
+```json
+[
+  { "section_id": 1, "subject_id": 10, "faculty_id": 5 }
+]
+```
+This locks a single faculty for each `(section_id, subject_id)` pair across all generated slots.
+
 ### Faculty View (Read-Only)
 - `GET /api/faculty/timetable`
 
@@ -179,6 +187,8 @@ Resources:
 - Account deletion requires JWT auth + password confirmation and writes an entry in `recent_activity`.
 - Forgot password uses `password_reset_otps` with 5-minute expiry, attempt limiting, and one-time usage.
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).
+- Timetable generation now enforces one faculty per `(section, subject)` for consistency.
+- Optional persistent mappings are stored in `subject_faculty_assignment`.
 - Unique constraints in `timetable_entries` enforce no faculty/classroom/section clashes.
 - `POST /api/master/faculty` is restricted to users with `Admin` role.
 - Extend scheduler logic for advanced optimization/AI strategies in future versions.

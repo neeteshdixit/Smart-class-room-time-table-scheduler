@@ -375,6 +375,15 @@ BEGIN
     END IF;
 END $$;
 
+CREATE TABLE IF NOT EXISTS subject_faculty_assignment (
+    id SERIAL PRIMARY KEY,
+    section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+    subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE RESTRICT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (section_id, subject_id)
+);
+
 CREATE TABLE IF NOT EXISTS blocks (
     id SERIAL PRIMARY KEY,
     block_name VARCHAR(80) UNIQUE NOT NULL,
@@ -746,6 +755,9 @@ CREATE INDEX IF NOT EXISTS idx_faculty_subjects_faculty_user_id ON faculty_subje
 CREATE UNIQUE INDEX IF NOT EXISTS uq_faculty_subjects_faculty_user_subject
 ON faculty_subjects(faculty_user_id, subject_id)
 WHERE faculty_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_subject_faculty_assignment_section_id ON subject_faculty_assignment(section_id);
+CREATE INDEX IF NOT EXISTS idx_subject_faculty_assignment_subject_id ON subject_faculty_assignment(subject_id);
+CREATE INDEX IF NOT EXISTS idx_subject_faculty_assignment_faculty_id ON subject_faculty_assignment(faculty_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_timeslot_id ON timetable_entries(timeslot_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_section_id ON timetable_entries(section_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_entries_subject_id ON timetable_entries(subject_id);
