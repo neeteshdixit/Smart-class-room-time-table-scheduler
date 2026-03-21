@@ -13,6 +13,7 @@ const DEFAULT_SEMESTER_WEEKS = 16;
 const DEFAULT_SLOT_DURATION_MINUTES = 50;
 const DEFAULT_MAX_WORKLOAD_PER_WEEK = 30;
 const DEFAULT_MAX_CLASSES_PER_DAY = 6;
+const DEFAULT_FACULTY_OVERUSE_THRESHOLD = 2;
 const DEFAULT_LAB_BLOCK_MINUTES = 100;
 const LAB_SESSION_SLOT_SPAN = 2;
 const GENERATION_STRATEGY = Object.freeze({
@@ -908,6 +909,10 @@ async function generateTimetableHandler(req, res, next) {
   try {
     const { semester_id: semesterId, version_name: versionName } = req.body;
     const generationStrategy = normalizeGenerationStrategy(req.body.generation_strategy);
+    const facultyOveruseThreshold = Math.max(
+      0,
+      asNonNegativeInteger(req.body.faculty_overuse_threshold, DEFAULT_FACULTY_OVERUSE_THRESHOLD)
+    );
     const rawFacultyAssignmentOverrides = Array.isArray(req.body.faculty_assignment_overrides)
       ? req.body.faculty_assignment_overrides
       : [];
@@ -989,7 +994,7 @@ async function generateTimetableHandler(req, res, next) {
     );
 
     let autoCreatedRooms = [];
-    if (autoRoomExpansion) {
+    if (autoRoomExpansion && !simulateOnly) {
       const requiredLectureRooms = Math.max(1, sectionsResult.rowCount);
       const requiredCapacity = Math.max(
         1,
@@ -998,11 +1003,18 @@ async function generateTimetableHandler(req, res, next) {
           60
         )
       );
-      autoCreatedRooms = await ensureAutoLectureRoomsForSections(client, {
-        requiredLectureRooms,
-        requiredCapacity,
-        departmentId,
-      });
+      // Use a dedicated auto-commit client so newly created fallback rooms
+      // are not rolled back when timetable generation fails.
+      const roomClient = await pool.connect();
+      try {
+        autoCreatedRooms = await ensureAutoLectureRoomsForSections(roomClient, {
+          requiredLectureRooms,
+          requiredCapacity,
+          departmentId,
+        });
+      } finally {
+        roomClient.release();
+      }
     }
 
     const roomsResult = await client.query(
@@ -1352,23 +1364,97 @@ async function generateTimetableHandler(req, res, next) {
       });
     }
 
-    // Build complete section-subject -> faculty map before scheduling.
-    sectionsResult.rows.forEach((section) => {
-      subjectsResult.rows.forEach((subject) => {
+    const sectionRowsOrdered = [...sectionsResult.rows].sort((a, b) => {
+      const byName = String(a.section_name || "").localeCompare(String(b.section_name || ""));
+      if (byName !== 0) return byName;
+      return Number(a.id) - Number(b.id);
+    });
+    const subjectRowsOrdered = [...subjectsResult.rows].sort((a, b) => {
+      const byName = String(a.subject_name || "").localeCompare(String(b.subject_name || ""));
+      if (byName !== 0) return byName;
+      return Number(a.id) - Number(b.id);
+    });
+    const subjectFacultySectionUsageMap = new Map();
+    initialFacultyAssignmentMap.forEach((facultyIdRaw, assignmentKey) => {
+      const [, subjectIdText] = String(assignmentKey).split("::");
+      const subjectId = Number(subjectIdText);
+      const facultyId = Number(facultyIdRaw);
+      if (!Number.isInteger(subjectId) || !Number.isInteger(facultyId)) return;
+      const usageKey = `${subjectId}-${facultyId}`;
+      subjectFacultySectionUsageMap.set(usageKey, (subjectFacultySectionUsageMap.get(usageKey) || 0) + 1);
+    });
+
+    function getSubjectFacultySectionUsage(subjectId, facultyId) {
+      return Number(subjectFacultySectionUsageMap.get(`${subjectId}-${facultyId}`) || 0);
+    }
+
+    function incrementSubjectFacultySectionUsage(subjectId, facultyId) {
+      const usageKey = `${subjectId}-${facultyId}`;
+      subjectFacultySectionUsageMap.set(usageKey, getSubjectFacultySectionUsage(subjectId, facultyId) + 1);
+    }
+
+    function getAverageGlobalProjectedLoad() {
+      if (facultyWorkloadMap.size === 0) return 0;
+      let total = 0;
+      facultyWorkloadMap.forEach((_, facultyId) => {
+        total += Number(preassignmentUsageMap.get(Number(facultyId)) || 0);
+      });
+      return total / facultyWorkloadMap.size;
+    }
+
+    // Build complete section-subject -> faculty map using subject-wise round-robin
+    // so one faculty doesn't capture all sections for the same subject.
+    subjectRowsOrdered.forEach((subject, subjectIndex) => {
+      const subjectId = Number(subject.id);
+      const candidates = subjectFacultyMap.get(subjectId) || [];
+      if (candidates.length === 0) {
+        return;
+      }
+
+      const baselineCandidates = rankFacultyCandidatesForPreassignment(candidates, preassignmentUsageMap);
+      if (baselineCandidates.length === 0) {
+        return;
+      }
+
+      const baseRotationOffset = baselineCandidates.length > 0 ? subjectIndex % baselineCandidates.length : 0;
+      sectionRowsOrdered.forEach((section, sectionIndex) => {
         const sectionId = Number(section.id);
-        const subjectId = Number(subject.id);
         const assignmentKey = toSectionSubjectKey(sectionId, subjectId);
         if (initialFacultyAssignmentMap.has(assignmentKey)) {
           return;
         }
 
-        const candidates = subjectFacultyMap.get(subjectId) || [];
-        if (candidates.length === 0) {
-          return;
+        const rotatedCandidates = [];
+        for (let rotationIndex = 0; rotationIndex < baselineCandidates.length; rotationIndex += 1) {
+          const candidateIndex = (baseRotationOffset + sectionIndex + rotationIndex) % baselineCandidates.length;
+          rotatedCandidates.push(baselineCandidates[candidateIndex]);
         }
 
-        const rankedCandidates = rankFacultyCandidatesForPreassignment(candidates, preassignmentUsageMap);
-        const selectedFaculty = rankedCandidates[0];
+        const subjectTotalAssigned = rotatedCandidates.reduce(
+          (accumulator, candidate) => accumulator + getSubjectFacultySectionUsage(subjectId, Number(candidate.faculty_id)),
+          0
+        );
+        const subjectAverageAssigned = rotatedCandidates.length > 0 ? subjectTotalAssigned / rotatedCandidates.length : 0;
+        const globalAverageProjectedLoad = getAverageGlobalProjectedLoad();
+
+        let selectedFaculty = null;
+        let selectedScore = Number.POSITIVE_INFINITY;
+        rotatedCandidates.forEach((candidate, rotationRank) => {
+          const facultyId = Number(candidate.faculty_id);
+          const subjectSectionUsage = getSubjectFacultySectionUsage(subjectId, facultyId);
+          const globalProjectedLoad = Number(preassignmentUsageMap.get(facultyId) || 0);
+          const workload = facultyWorkloadMap.get(facultyId) || { max: 0 };
+          const loadRatio = workload.max > 0 ? globalProjectedLoad / workload.max : Number.POSITIVE_INFINITY;
+          const exceedsSubjectSkew = subjectSectionUsage > subjectAverageAssigned + 1;
+          const exceedsGlobalSkew = globalProjectedLoad > globalAverageProjectedLoad + facultyOveruseThreshold;
+          const skewPenalty = (exceedsSubjectSkew ? 5000 : 0) + (exceedsGlobalSkew ? 1000 : 0);
+          const score = skewPenalty + subjectSectionUsage * 100 + loadRatio * 25 + globalProjectedLoad + rotationRank * 0.1;
+          if (score < selectedScore) {
+            selectedScore = score;
+            selectedFaculty = candidate;
+          }
+        });
+
         if (!selectedFaculty) {
           return;
         }
@@ -1380,6 +1466,7 @@ async function generateTimetableHandler(req, res, next) {
           selectedFacultyId,
           (preassignmentUsageMap.get(selectedFacultyId) || 0) + Math.max(1, demandUnits)
         );
+        incrementSubjectFacultySectionUsage(subjectId, selectedFacultyId);
       });
     });
 
@@ -1554,10 +1641,29 @@ async function generateTimetableHandler(req, res, next) {
       return cloned;
     }
 
+    function getAverageFacultyAssignedLoad(facultyLoadState) {
+      if (!facultyLoadState || facultyLoadState.size === 0) return 0;
+      let total = 0;
+      facultyLoadState.forEach((load) => {
+        total += Number(load?.assigned || 0);
+      });
+      return total / facultyLoadState.size;
+    }
+
     function rankFacultyCandidates(candidates, facultyLoadState, options = {}) {
+      const threshold = Math.max(0, asNonNegativeInteger(options.overuseThreshold, facultyOveruseThreshold));
+      const averageAssignedLoad = getAverageFacultyAssignedLoad(facultyLoadState);
+      const overuseLimit = averageAssignedLoad + threshold;
+      const ignoreOveruseThreshold = Boolean(options.ignoreOveruseThreshold);
       const ranked = [...candidates].sort((a, b) => {
         const aLoad = facultyLoadState.get(a.faculty_id) || { max: 0, assigned: 0 };
         const bLoad = facultyLoadState.get(b.faculty_id) || { max: 0, assigned: 0 };
+        const aProjected = Number(aLoad.assigned || 0) + 1;
+        const bProjected = Number(bLoad.assigned || 0) + 1;
+        const aOverused = !ignoreOveruseThreshold && aProjected > overuseLimit;
+        const bOverused = !ignoreOveruseThreshold && bProjected > overuseLimit;
+        if (aOverused !== bOverused) return aOverused ? 1 : -1;
+
         const aRatio = aLoad.max > 0 ? aLoad.assigned / aLoad.max : Number.POSITIVE_INFINITY;
         const bRatio = bLoad.max > 0 ? bLoad.assigned / bLoad.max : Number.POSITIVE_INFINITY;
 
@@ -1580,8 +1686,9 @@ async function generateTimetableHandler(req, res, next) {
       const subjectFacultyCandidates = subjectFacultyMap.get(subject.id) || [];
       const preAssignedFacultyId = schedulingState.facultyAssignmentMap.get(assignmentKey);
       const alreadyAssignedForPair = Number(schedulingState.sectionSubjectAssignedCount.get(assignmentKey) || 0);
-      const allowSecondaryFacultyFallback = Boolean(options.allowSecondaryFacultyFallback) && alreadyAssignedForPair === 0;
-      const allowAnyFacultyFallback = Boolean(options.allowAnyFacultyFallback);
+      const canRelaxFacultyForPair = alreadyAssignedForPair === 0;
+      const allowSecondaryFacultyFallback = Boolean(options.allowSecondaryFacultyFallback) && canRelaxFacultyForPair;
+      const allowAnyFacultyFallback = Boolean(options.allowAnyFacultyFallback) && canRelaxFacultyForPair;
       let facultyCandidates = subjectFacultyCandidates;
       if (preAssignedFacultyId) {
         const preferredFacultyCandidates = subjectFacultyCandidates.filter(
@@ -1642,13 +1749,43 @@ async function generateTimetableHandler(req, res, next) {
           continue;
         }
 
-        const rankedFaculty = rankFacultyCandidates(facultyCandidates, schedulingState.facultyLoadState, options);
+        const rankedFaculty = rankFacultyCandidates(facultyCandidates, schedulingState.facultyLoadState, {
+          ...options,
+          overuseThreshold: facultyOveruseThreshold,
+        });
+        const averageAssignedLoad = getAverageFacultyAssignedLoad(schedulingState.facultyLoadState);
+        const overuseLimit = averageAssignedLoad + facultyOveruseThreshold;
         for (const faculty of rankedFaculty) {
           const facultyId = faculty.faculty_id;
           const load = schedulingState.facultyLoadState.get(facultyId);
-          if (!load || load.assigned + slotGroup.length > load.max) {
+          if (!load) {
             counters[CONFLICT_REASON.WORKLOAD_EXCEEDED] += 1;
             continue;
+          }
+          if (!options.ignoreWeeklyFacultyLimit && load.assigned + slotGroup.length > load.max) {
+            counters[CONFLICT_REASON.WORKLOAD_EXCEEDED] += 1;
+            continue;
+          }
+
+          const projectedLoad = Number(load.assigned || 0) + slotGroup.length;
+          if (!options.ignoreOveruseThreshold && projectedLoad > overuseLimit) {
+            const hasAlternativeWithinThreshold = rankedFaculty.some((candidate) => {
+              const candidateId = Number(candidate.faculty_id);
+              if (candidateId === Number(facultyId)) return false;
+              const candidateLoad = schedulingState.facultyLoadState.get(candidateId);
+              if (!candidateLoad) return false;
+              if (
+                !options.ignoreWeeklyFacultyLimit &&
+                Number(candidateLoad.assigned || 0) + slotGroup.length > Number(candidateLoad.max || 0)
+              ) {
+                return false;
+              }
+              return Number(candidateLoad.assigned || 0) + slotGroup.length <= overuseLimit;
+            });
+            if (hasAlternativeWithinThreshold) {
+              counters[CONFLICT_REASON.WORKLOAD_EXCEEDED] += 1;
+              continue;
+            }
           }
 
           const exceedsDailyClassLimit = slotGroup.some((slot) => {
@@ -2167,6 +2304,18 @@ async function generateTimetableHandler(req, res, next) {
         allowAnyFacultyFallback: true,
         ignoreDailyFacultyLimit: true,
       },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+        allowSecondaryFacultyFallback: true,
+        allowAnyFacultyFallback: true,
+        ignoreDailyFacultyLimit: true,
+        ignoreOveruseThreshold: true,
+        ignoreWeeklyFacultyLimit: true,
+      },
     ];
 
     function tryAssignWithVariants(request, variants) {
@@ -2265,6 +2414,18 @@ async function generateTimetableHandler(req, res, next) {
           allowSecondaryFacultyFallback: true,
           allowAnyFacultyFallback: true,
           ignoreDailyFacultyLimit: true,
+        },
+        {
+          ignorePreferredDay: true,
+          reverseDayOrder: false,
+          reverseSlotOrder: false,
+          reverseFacultyOrder: false,
+          reverseRoomOrder: false,
+          allowSecondaryFacultyFallback: true,
+          allowAnyFacultyFallback: true,
+          ignoreDailyFacultyLimit: true,
+          ignoreOveruseThreshold: true,
+          ignoreWeeklyFacultyLimit: true,
         },
       ];
 
@@ -2506,6 +2667,18 @@ async function generateTimetableHandler(req, res, next) {
         allowSecondaryFacultyFallback: true,
         allowAnyFacultyFallback: true,
         ignoreDailyFacultyLimit: true,
+      },
+      {
+        ignorePreferredDay: false,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+        allowSecondaryFacultyFallback: true,
+        allowAnyFacultyFallback: true,
+        ignoreDailyFacultyLimit: true,
+        ignoreOveruseThreshold: true,
+        ignoreWeeklyFacultyLimit: true,
       },
     ];
 
@@ -2794,6 +2967,7 @@ async function generateTimetableHandler(req, res, next) {
             : "Simulation completed with conflicts.",
         simulation_mode: true,
         generation_strategy: generationStrategy,
+        faculty_overuse_threshold: facultyOveruseThreshold,
         feasible: conflicts.length === 0,
         assigned_entries: entries.length,
         conflicts_count: conflicts.length,
@@ -2913,6 +3087,7 @@ async function generateTimetableHandler(req, res, next) {
     return res.status(201).json({
       message: "Timetable generated",
       generation_strategy: generationStrategy,
+      faculty_overuse_threshold: facultyOveruseThreshold,
       timetable: {
         ...timetableResult.rows[0],
         total_weeks: totalWeeks,
@@ -3070,6 +3245,7 @@ const generateTimetableMiddleware = [
   body("semester_id").isInt({ min: 1 }),
   body("version_name").trim().notEmpty(),
   body("generation_strategy").optional().isIn(["balanced", "compact", "faculty_friendly"]),
+  body("faculty_overuse_threshold").optional().isInt({ min: 0, max: 20 }),
   body("faculty_assignment_overrides").optional().isArray(),
   body("auto_room_expansion").optional().isBoolean(),
   body("reuse_saved_faculty_assignments").optional().isBoolean(),

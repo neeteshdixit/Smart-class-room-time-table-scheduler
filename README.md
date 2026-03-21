@@ -158,7 +158,9 @@ This locks a single faculty for each `(section_id, subject_id)` pair across all 
 
 Optional payload flags:
 - `auto_room_expansion` (`true/false`, default `true`) to auto-create fallback lecture rooms when sections exceed available room capacity.
+  This creation is persisted, so generated fallback rooms remain available for future runs.
 - `reuse_saved_faculty_assignments` (`true/false`, default `false`) to reuse `subject_faculty_assignment` from earlier runs.
+- `faculty_overuse_threshold` (`0-20`, default `2`) to control how far a faculty load can exceed average before lower-priority selection.
 
 ### Faculty View (Read-Only)
 - `GET /api/faculty/timetable`
@@ -193,6 +195,7 @@ Optional payload flags:
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).
 - Timetable generation now enforces one faculty per `(section, subject)` for consistency.
 - Faculty allocation is load-balanced using workload ratio, daily class limits, and slot availability checks.
+- Faculty distribution for the same subject is section-wise round-robin to avoid one faculty capturing all sections.
 - Session assignment uses section-aware round-robin ordering to improve fill rate for newly added sections.
 - Optional persistent mappings are stored in `subject_faculty_assignment`.
 - Unique constraints in `timetable_entries` enforce no faculty/classroom/section clashes.
