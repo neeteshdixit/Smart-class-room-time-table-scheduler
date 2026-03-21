@@ -157,6 +157,7 @@ Resources:
 This locks a single faculty for each `(section_id, subject_id)` pair across all generated slots.
 
 Optional payload flags:
+- `auto_room_expansion` (`true/false`, default `true`) to auto-create fallback lecture rooms when sections exceed available room capacity.
 - `reuse_saved_faculty_assignments` (`true/false`, default `false`) to reuse `subject_faculty_assignment` from earlier runs.
 
 ### Faculty View (Read-Only)
