@@ -1761,6 +1761,16 @@ async function generateTimetableHandler(req, res, next) {
       return holePenalty * 100 + lateStartPenalty * 10 + spanPenalty;
     }
 
+    function calculateSectionCoveragePenalty(sectionAssignedCount) {
+      let penalty = 0;
+      requiredRequestCountBySection.forEach((required, sectionId) => {
+        const assigned = Number(sectionAssignedCount.get(Number(sectionId)) || 0);
+        const missing = Math.max(0, Number(required) - assigned);
+        penalty += missing * 1000;
+      });
+      return penalty;
+    }
+
     function runSchedulingProfile(profile) {
       const schedulingState = {
         facultySlotUsed: new Set(),
@@ -1779,7 +1789,12 @@ async function generateTimetableHandler(req, res, next) {
       function runModeRequests(modeRequests) {
         let pending = [...modeRequests];
         let noProgressPasses = 0;
-        const maxPasses = Math.max(6, profile.variants.length * 4);
+        const sectionCount = Math.max(1, sectionsResult.rows.length);
+        const maxPasses = Math.max(
+          8,
+          profile.variants.length * 4,
+          Math.ceil(modeRequests.length / sectionCount) * 3
+        );
 
         for (let pass = 0; pass < maxPasses && pending.length > 0; pass += 1) {
           const variant = profile.variants[pass % profile.variants.length];
@@ -1850,6 +1865,7 @@ async function generateTimetableHandler(req, res, next) {
         pendingRequests,
         pendingPracticalCount: pendingRequests.filter((request) => request.mode === "Practical").length,
         layoutPenalty: calculateLayoutPenalty(schedulingState.entries),
+        sectionCoveragePenalty: calculateSectionCoveragePenalty(schedulingState.sectionAssignedCount),
       };
     }
 
@@ -1863,6 +1879,9 @@ async function generateTimetableHandler(req, res, next) {
       }
       if (candidate.entries.length !== currentBest.entries.length) {
         return candidate.entries.length > currentBest.entries.length;
+      }
+      if (candidate.sectionCoveragePenalty !== currentBest.sectionCoveragePenalty) {
+        return candidate.sectionCoveragePenalty < currentBest.sectionCoveragePenalty;
       }
       if (candidate.layoutPenalty !== currentBest.layoutPenalty) {
         return candidate.layoutPenalty < currentBest.layoutPenalty;
@@ -1895,6 +1914,7 @@ async function generateTimetableHandler(req, res, next) {
             reverseSlotOrder: false,
             reverseFacultyOrder: false,
             reverseRoomOrder: false,
+            allowSecondaryFacultyFallback: true,
           },
         ],
       },
@@ -1915,6 +1935,7 @@ async function generateTimetableHandler(req, res, next) {
             reverseSlotOrder: false,
             reverseFacultyOrder: true,
             reverseRoomOrder: true,
+            allowSecondaryFacultyFallback: true,
           },
         ],
       },
@@ -1935,6 +1956,7 @@ async function generateTimetableHandler(req, res, next) {
             reverseSlotOrder: true,
             reverseFacultyOrder: true,
             reverseRoomOrder: true,
+            allowSecondaryFacultyFallback: true,
           },
         ],
       },
@@ -1994,6 +2016,7 @@ async function generateTimetableHandler(req, res, next) {
         reverseSlotOrder: true,
         reverseFacultyOrder: true,
         reverseRoomOrder: true,
+        allowSecondaryFacultyFallback: true,
       },
       {
         ignorePreferredDay: true,
@@ -2001,6 +2024,7 @@ async function generateTimetableHandler(req, res, next) {
         reverseSlotOrder: false,
         reverseFacultyOrder: false,
         reverseRoomOrder: false,
+        allowSecondaryFacultyFallback: true,
       },
       {
         ignorePreferredDay: true,
@@ -2008,6 +2032,7 @@ async function generateTimetableHandler(req, res, next) {
         reverseSlotOrder: true,
         reverseFacultyOrder: true,
         reverseRoomOrder: true,
+        allowSecondaryFacultyFallback: true,
       },
     ];
 
@@ -2095,6 +2120,7 @@ async function generateTimetableHandler(req, res, next) {
           reverseSlotOrder: false,
           reverseFacultyOrder: true,
           reverseRoomOrder: true,
+          allowSecondaryFacultyFallback: true,
         },
         {
           ignorePreferredDay: true,
@@ -2102,6 +2128,7 @@ async function generateTimetableHandler(req, res, next) {
           reverseSlotOrder: true,
           reverseFacultyOrder: true,
           reverseRoomOrder: true,
+          allowSecondaryFacultyFallback: true,
         },
       ];
 
@@ -2238,6 +2265,21 @@ async function generateTimetableHandler(req, res, next) {
       });
     });
 
+    const incompleteSections = [];
+    requiredRequestCountBySection.forEach((requiredCount, sectionId) => {
+      const assignedCount = Number(schedulingState.sectionAssignedCount.get(Number(sectionId)) || 0);
+      if (assignedCount >= Number(requiredCount)) return;
+
+      const sectionName = String(sectionById.get(Number(sectionId))?.section_name || `Section#${sectionId}`);
+      incompleteSections.push({
+        section_id: Number(sectionId),
+        section_name: sectionName,
+        required_sessions: Number(requiredCount),
+        assigned_sessions: assignedCount,
+        missing_sessions: Math.max(0, Number(requiredCount) - assignedCount),
+      });
+    });
+
     if (incompleteSubjects.length > 0) {
       const firstIncomplete = incompleteSubjects[0];
       const conflictSummary = buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS);
@@ -2249,6 +2291,7 @@ async function generateTimetableHandler(req, res, next) {
         conflicts_count: conflicts.length,
         conflicts,
         incomplete_subjects: incompleteSubjects,
+        incomplete_sections: incompleteSections,
         conflict_summary: conflictSummary,
         errors: flattenGroupItems(conflictSummary),
       });
@@ -2306,6 +2349,39 @@ async function generateTimetableHandler(req, res, next) {
         inconsistent_faculty_assignments: inconsistentFacultyAssignments,
       });
     }
+
+    const sectionCoverage = sectionsResult.rows.map((section) => {
+      const sectionId = Number(section.id);
+      const required = Number(requiredRequestCountBySection.get(sectionId) || 0);
+      const assigned = Number(schedulingState.sectionAssignedCount.get(sectionId) || 0);
+      return {
+        section_id: sectionId,
+        section_name: String(section.section_name || `Section#${sectionId}`),
+        required_sessions: required,
+        assigned_sessions: assigned,
+        missing_sessions: Math.max(0, required - assigned),
+        completion_ratio: required > 0 ? Number((assigned / required).toFixed(3)) : 1,
+      };
+    });
+    const facultyLoad = [...schedulingState.facultyLoadState.entries()]
+      .map(([facultyId, value]) => {
+        const assigned = Number(value?.assigned || 0);
+        const max = Number(value?.max || 0);
+        return {
+          faculty_id: Number(facultyId),
+          faculty_name: String(value?.name || `Faculty#${facultyId}`),
+          assigned_classes: assigned,
+          max_classes_per_week: max,
+          load_ratio: max > 0 ? Number((assigned / max).toFixed(3)) : null,
+        };
+      })
+      .sort((a, b) => {
+        const aRatio = a.load_ratio === null ? Number.POSITIVE_INFINITY : a.load_ratio;
+        const bRatio = b.load_ratio === null ? Number.POSITIVE_INFINITY : b.load_ratio;
+        if (aRatio !== bRatio) return aRatio - bRatio;
+        if (a.assigned_classes !== b.assigned_classes) return a.assigned_classes - b.assigned_classes;
+        return String(a.faculty_name).localeCompare(String(b.faculty_name));
+      });
 
     const uniqueAssignedRoomIds = [...new Set(entries.map((entry) => Number(entry.classroom_id)).filter((id) => Number.isInteger(id) && id > 0))];
     const roomValidationResult = uniqueAssignedRoomIds.length
@@ -2401,6 +2477,9 @@ async function generateTimetableHandler(req, res, next) {
         conflicts_count: conflicts.length,
         conflicts,
         precheck_summary: buildPrecheckSummary(precheckStatus),
+        section_coverage: sectionCoverage,
+        faculty_load: facultyLoad,
+        faculty_max_classes_per_day: facultyMaxClassesPerDay,
         conflict_summary: conflictSummary,
         errors: flattenGroupItems(conflictSummary),
       });
@@ -2520,6 +2599,9 @@ async function generateTimetableHandler(req, res, next) {
       conflicts_count: conflicts.length,
       conflicts,
       precheck_summary: buildPrecheckSummary(precheckStatus),
+      section_coverage: sectionCoverage,
+      faculty_load: facultyLoad,
+      faculty_max_classes_per_day: facultyMaxClassesPerDay,
       conflict_summary: buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS),
       pdf_path: pdfFile.publicPath,
       history: historyResult.rows[0],

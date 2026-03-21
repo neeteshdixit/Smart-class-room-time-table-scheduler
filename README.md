@@ -156,6 +156,9 @@ Resources:
 ```
 This locks a single faculty for each `(section_id, subject_id)` pair across all generated slots.
 
+Optional payload flags:
+- `reuse_saved_faculty_assignments` (`true/false`, default `false`) to reuse `subject_faculty_assignment` from earlier runs.
+
 ### Faculty View (Read-Only)
 - `GET /api/faculty/timetable`
 
@@ -188,6 +191,8 @@ This locks a single faculty for each `(section_id, subject_id)` pair across all 
 - Forgot password uses `password_reset_otps` with 5-minute expiry, attempt limiting, and one-time usage.
 - Timetable generator is a functional greedy allocator (practicals/theory by constraints).
 - Timetable generation now enforces one faculty per `(section, subject)` for consistency.
+- Faculty allocation is load-balanced using workload ratio, daily class limits, and slot availability checks.
+- Session assignment uses section-aware round-robin ordering to improve fill rate for newly added sections.
 - Optional persistent mappings are stored in `subject_faculty_assignment`.
 - Unique constraints in `timetable_entries` enforce no faculty/classroom/section clashes.
 - `POST /api/master/faculty` is restricted to users with `Admin` role.
