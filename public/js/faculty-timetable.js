@@ -2,10 +2,22 @@ requireAuth();
 
 const alertId = "facultyTimetableAlert";
 const facultyIdentity = document.getElementById("facultyIdentity");
-const timetableSelect = document.getElementById("facultyTimetableSelect");
-const gridHeader = document.getElementById("facultyGridHeader");
-const gridContainer = document.getElementById("facultyGridContainer");
-const gridFooter = document.getElementById("facultyGridFooter");
+const facultyTimetableSelect = document.getElementById("facultyTimetableSelect");
+const facultyGridHeader = document.getElementById("facultyGridHeader");
+const facultyGridContainer = document.getElementById("facultyGridContainer");
+const facultyGridFooter = document.getElementById("facultyGridFooter");
+const studentTimetableSelect = document.getElementById("studentTimetableSelect");
+const studentSectionSelect = document.getElementById("studentSectionSelect");
+const studentDownloadBtn = document.getElementById("studentDownloadBtn");
+const studentShareBtn = document.getElementById("studentShareBtn");
+const studentGridHeader = document.getElementById("studentGridHeader");
+const studentGridContainer = document.getElementById("studentGridContainer");
+const studentGridFooter = document.getElementById("studentGridFooter");
+
+const state = {
+  faculty: null,
+  student: null,
+};
 
 function decodeJwtPayload(token) {
   try {
@@ -104,7 +116,18 @@ function samePracticalBlock(firstEntry, secondEntry) {
   );
 }
 
-function buildCell(entry, colspan = 1) {
+function buildTimetableOptions(timetables) {
+  return timetables
+    .map(
+      (row) =>
+        `<option value="${escapeHtml(row.id)}">${escapeHtml(row.version_name)} | Sem ${escapeHtml(
+          row.semester_number
+        )} | ${escapeHtml(row.academic_year)}</option>`
+    )
+    .join("");
+}
+
+function buildCell(entry, options = {}, colspan = 1) {
   if (!entry) {
     return '<td><div class="timetable-cell text-secondary">-</div></td>';
   }
@@ -113,66 +136,63 @@ function buildCell(entry, colspan = 1) {
   const cellClass = mode === "practical" ? "timetable-cell-practical" : "timetable-cell-theory";
   const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : "";
   const modeText = mode === "practical" ? "Lab (2 slots)" : "Theory";
+  const detailText = typeof options.detailFormatter === "function" ? options.detailFormatter(entry) : entry.section_name || "-";
 
   return `
     <td${colspanAttr} class="${cellClass}">
       <div class="timetable-cell">
         <div class="timetable-cell-code">${escapeHtml(entry.subject_code || "-")}</div>
         <div class="timetable-cell-title">${escapeHtml(entry.subject_name || "-")}</div>
-        <div class="timetable-cell-detail">${escapeHtml(entry.section_name || "-")}</div>
+        <div class="timetable-cell-detail">${escapeHtml(detailText || "-")}</div>
         <div class="timetable-cell-room">${escapeHtml(entry.room_number || "-")} | ${escapeHtml(modeText)}</div>
       </div>
     </td>
   `;
 }
 
-function renderPlaceholder(message) {
-  if (gridHeader) gridHeader.innerHTML = "";
-  if (gridFooter) gridFooter.innerHTML = "";
-  if (gridContainer) {
-    gridContainer.innerHTML = `<div class="text-secondary py-3 text-center">${escapeHtml(message)}</div>`;
+function renderPlaceholder({ header, container, footer, message }) {
+  if (header) header.innerHTML = "";
+  if (footer) footer.innerHTML = "";
+  if (container) {
+    container.innerHTML = `<div class="text-secondary py-3 text-center">${escapeHtml(message)}</div>`;
   }
 }
 
-function renderTimetable(data) {
-  const timetable = data?.timetable || null;
-  const entries = Array.isArray(data?.entries) ? data.entries : [];
-  const timeSlots = Array.isArray(data?.time_slots) ? data.time_slots : [];
-
+function renderTimetableGrid({ header, container, footer, timetable, entries, timeSlots, placeholderMessage, detailFormatter }) {
   if (!timetable) {
-    renderPlaceholder("No timetable assigned.");
+    renderPlaceholder({ header, container, footer, message: placeholderMessage });
     return;
   }
 
   const slotColumns = Array.from(
     new Map(
-      timeSlots
+      (Array.isArray(timeSlots) ? timeSlots : [])
         .map((slot) => [Number(slot.slot_number), slot])
         .sort((a, b) => a[0] - b[0])
     ).values()
   ).sort((a, b) => Number(a.slot_number) - Number(b.slot_number));
 
   if (!slotColumns.length) {
-    renderPlaceholder("No time slots configured for this timetable.");
+    renderPlaceholder({ header, container, footer, message: "No time slots configured for this timetable." });
     return;
   }
 
   const workingDayNumbers = Array.from(
-    new Set(timeSlots.map((slot) => Number(slot.day_of_week)).filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))
+    new Set(slotColumns.map((slot) => Number(slot.day_of_week)).filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))
   ).sort((a, b) => a - b);
   if (!workingDayNumbers.length) {
-    renderPlaceholder("No working days found.");
+    renderPlaceholder({ header, container, footer, message: "No working days found." });
     return;
   }
 
   const entryByDayAndSlot = new Map(
-    entries.map((entry) => [`${entry.day_of_week}-${entry.slot_number}`, entry])
+    (Array.isArray(entries) ? entries : []).map((entry) => [`${entry.day_of_week}-${entry.slot_number}`, entry])
   );
   const breakInsertIndex = detectBreakInsertIndex(slotColumns);
 
   const headerCells = slotColumns
     .map((slot, index) => {
-      const header = `
+      const headerCell = `
         <th class="timetable-slot-col">
           <div>${escapeHtml(slot.slot_number)}</div>
           <div class="small fw-normal">${escapeHtml(formatClockTime(slot.start_time))} - ${escapeHtml(
@@ -181,9 +201,9 @@ function renderTimetable(data) {
         </th>
       `;
       if (breakInsertIndex > 0 && index === breakInsertIndex - 1) {
-        return `${header}<th class="timetable-lunch-col">Break</th>`;
+        return `${headerCell}<th class="timetable-lunch-col">Break</th>`;
       }
-      return header;
+      return headerCell;
     })
     .join("");
 
@@ -203,7 +223,7 @@ function renderTimetable(data) {
           }
         }
 
-        cells.push(buildCell(entry, consumedSpan));
+        cells.push(buildCell(entry, { detailFormatter }, consumedSpan));
 
         if (breakInsertIndex > 0 && slotIndex === breakInsertIndex - 1) {
           cells.push('<td class="timetable-lunch-col">BREAK</td>');
@@ -223,18 +243,18 @@ function renderTimetable(data) {
     })
     .join("");
 
-  if (gridHeader) {
-    gridHeader.innerHTML = `
+  if (header) {
+    header.innerHTML = `
       <div class="timetable-session-title">Session ${escapeHtml(timetable.academic_year || "-")}</div>
       <div class="timetable-program-title">Semester ${escapeHtml(timetable.semester_number || "-")}</div>
       <div class="small text-secondary">${escapeHtml(timetable.department_name || "-")} | ${escapeHtml(
-      timetable.branch_name || "-"
-    )}</div>
+        timetable.branch_name || "-"
+      )}</div>
     `;
   }
 
-  if (gridContainer) {
-    gridContainer.innerHTML = `
+  if (container) {
+    container.innerHTML = `
       <table class="table table-bordered timetable-grid-table mb-0">
         <thead>
           <tr>
@@ -249,33 +269,92 @@ function renderTimetable(data) {
     `;
   }
 
-  if (gridFooter) {
-    gridFooter.innerHTML = `
+  if (footer) {
+    footer.innerHTML = `
       <span>Version: ${escapeHtml(timetable.version_name || "-")} | Status: ${escapeHtml(timetable.status || "-")}</span>
       <span>Generated: ${escapeHtml(formatDateTime(timetable.created_at))}</span>
     `;
   }
 }
 
-function renderTimetableSelector(data) {
-  if (!timetableSelect) return;
+function renderFacultyTimetable(data) {
+  renderTimetableGrid({
+    header: facultyGridHeader,
+    container: facultyGridContainer,
+    footer: facultyGridFooter,
+    timetable: data?.timetable || null,
+    entries: Array.isArray(data?.entries) ? data.entries : [],
+    timeSlots: Array.isArray(data?.time_slots) ? data.time_slots : [],
+    placeholderMessage: "No timetable assigned.",
+    detailFormatter: (entry) => entry.section_name || "-",
+  });
+}
+
+function renderStudentTimetable(data) {
+  const selectedSectionId = Number(data?.selected_section_id || 0);
+  const entries = (Array.isArray(data?.entries) ? data.entries : []).filter(
+    (entry) => !selectedSectionId || Number(entry.section_id) === selectedSectionId
+  );
+
+  renderTimetableGrid({
+    header: studentGridHeader,
+    container: studentGridContainer,
+    footer: studentGridFooter,
+    timetable: data?.timetable || null,
+    entries,
+    timeSlots: Array.isArray(data?.time_slots) ? data.time_slots : [],
+    placeholderMessage: "No student timetable available.",
+    detailFormatter: (entry) => entry.faculty_name || "-",
+  });
+}
+
+function renderFacultySelector(data) {
+  if (!facultyTimetableSelect) return;
   const timetables = Array.isArray(data?.timetables) ? data.timetables : [];
   if (!timetables.length) {
-    timetableSelect.disabled = true;
-    timetableSelect.innerHTML = '<option value="">No timetable</option>';
+    facultyTimetableSelect.disabled = true;
+    facultyTimetableSelect.innerHTML = '<option value="">No timetable</option>';
     return;
   }
 
-  timetableSelect.disabled = false;
-  timetableSelect.innerHTML = timetables
-    .map(
-      (row) =>
-        `<option value="${escapeHtml(row.id)}">${escapeHtml(row.version_name)} | Sem ${escapeHtml(
-          row.semester_number
-        )} | ${escapeHtml(row.academic_year)}</option>`
-    )
-    .join("");
-  timetableSelect.value = String(data.selected_timetable_id || timetables[0].id);
+  facultyTimetableSelect.disabled = false;
+  facultyTimetableSelect.innerHTML = buildTimetableOptions(timetables);
+  facultyTimetableSelect.value = String(data.selected_timetable_id || timetables[0].id);
+}
+
+function renderStudentControls(data) {
+  if (studentTimetableSelect) {
+    const timetables = Array.isArray(data?.timetables) ? data.timetables : [];
+    if (!timetables.length) {
+      studentTimetableSelect.disabled = true;
+      studentTimetableSelect.innerHTML = '<option value="">No timetable</option>';
+    } else {
+      studentTimetableSelect.disabled = false;
+      studentTimetableSelect.innerHTML = buildTimetableOptions(timetables);
+      studentTimetableSelect.value = String(data.selected_timetable_id || timetables[0].id);
+    }
+  }
+
+  if (studentSectionSelect) {
+    const sections = Array.isArray(data?.sections) ? data.sections : [];
+    if (!sections.length) {
+      studentSectionSelect.disabled = true;
+      studentSectionSelect.innerHTML = '<option value="">No section</option>';
+    } else {
+      studentSectionSelect.disabled = false;
+      studentSectionSelect.innerHTML = sections
+        .map((section) => `<option value="${escapeHtml(section.id)}">${escapeHtml(section.name || `Section ${section.id}`)}</option>`)
+        .join("");
+      studentSectionSelect.value = String(data.selected_section_id || sections[0].id);
+    }
+  }
+
+  if (studentDownloadBtn) {
+    studentDownloadBtn.disabled = !data?.selected_timetable_id;
+  }
+  if (studentShareBtn) {
+    studentShareBtn.disabled = !data?.selected_timetable_id;
+  }
 }
 
 async function loadFacultyTimetable(timetableId = null) {
@@ -286,39 +365,166 @@ async function loadFacultyTimetable(timetableId = null) {
     headers: authHeaders(),
   });
 
+  state.faculty = response;
+
   if (facultyIdentity) {
     const faculty = response?.faculty || {};
     facultyIdentity.textContent = `${faculty.full_name || "-"} (${faculty.faculty_id || "-"})`;
   }
 
-  renderTimetableSelector(response);
-  renderTimetable(response);
+  renderFacultySelector(response);
+  renderFacultyTimetable(response);
+  return response;
 }
 
-if (timetableSelect) {
-  timetableSelect.addEventListener("change", async () => {
-    const selectedId = Number(timetableSelect.value);
+async function loadStudentTimetable(timetableId = null, sectionId = null) {
+  const params = new URLSearchParams();
+  if (timetableId) params.set("timetable_id", String(timetableId));
+  if (sectionId) params.set("section_id", String(sectionId));
+  const query = params.toString() ? `?${params.toString()}` : "";
+
+  const response = await apiRequest(`/faculty/student-timetable${query}`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  state.student = response;
+  renderStudentControls(response);
+  renderStudentTimetable(response);
+  return response;
+}
+
+async function handleStudentShare() {
+  const timetableId = Number(state.student?.selected_timetable_id || 0);
+  if (!Number.isInteger(timetableId) || timetableId <= 0) {
+    showAlert(alertId, "Select a student timetable first.");
+    return;
+  }
+
+  const rawRecipients = window.prompt("Enter student group email addresses separated by commas:");
+  if (!rawRecipients) return;
+  const recipientEmails = rawRecipients
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (!recipientEmails.length) {
+    showAlert(alertId, "Please enter at least one email address.");
+    return;
+  }
+
+  const message = window.prompt("Optional message for students:", "") || "";
+  const payload = {
+    timetable_id: timetableId,
+    section_id: Number(state.student?.selected_section_id || 0) || undefined,
+    recipient_emails: recipientEmails,
+    message,
+  };
+
+  await apiRequest("/faculty/student-timetable/share", {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+
+  showAlert(alertId, "Student timetable shared successfully.", "success");
+}
+
+if (facultyTimetableSelect) {
+  facultyTimetableSelect.addEventListener("change", async () => {
+    const selectedId = Number(facultyTimetableSelect.value);
     if (!Number.isInteger(selectedId) || selectedId <= 0) return;
 
     try {
       await loadFacultyTimetable(selectedId);
+      await loadStudentTimetable(selectedId, Number(state.student?.selected_section_id || 0) || null);
     } catch (err) {
       showAlert(alertId, err.message || "Failed to load timetable.");
     }
   });
 }
 
+if (studentTimetableSelect) {
+  studentTimetableSelect.addEventListener("change", async () => {
+    const selectedId = Number(studentTimetableSelect.value);
+    if (!Number.isInteger(selectedId) || selectedId <= 0) return;
+
+    try {
+      await loadStudentTimetable(selectedId);
+    } catch (err) {
+      showAlert(alertId, err.message || "Failed to load student timetable.");
+    }
+  });
+}
+
+if (studentSectionSelect) {
+  studentSectionSelect.addEventListener("change", async () => {
+    const selectedTimetableId = Number(state.student?.selected_timetable_id || 0);
+    const selectedSectionId = Number(studentSectionSelect.value);
+    if (!Number.isInteger(selectedTimetableId) || selectedTimetableId <= 0) return;
+    if (!Number.isInteger(selectedSectionId) || selectedSectionId <= 0) return;
+
+    try {
+      await loadStudentTimetable(selectedTimetableId, selectedSectionId);
+    } catch (err) {
+      showAlert(alertId, err.message || "Failed to load student timetable.");
+    }
+  });
+}
+
+if (studentDownloadBtn) {
+  studentDownloadBtn.addEventListener("click", () => {
+    const timetableId = Number(state.student?.selected_timetable_id || 0);
+    if (!Number.isInteger(timetableId) || timetableId <= 0) {
+      showAlert(alertId, "Select a student timetable first.");
+      return;
+    }
+
+    const params = new URLSearchParams();
+    params.set("timetable_id", String(timetableId));
+    const sectionId = Number(state.student?.selected_section_id || 0);
+    if (Number.isInteger(sectionId) && sectionId > 0) {
+      params.set("section_id", String(sectionId));
+    }
+
+    const apiBase = readRuntimeApiBase() || activeApiBase || DEFAULT_API_BASE;
+    const url = buildApiUrl(apiBase, `/faculty/student-timetable/download?${params.toString()}`);
+    window.open(url, "_blank", "noopener");
+  });
+}
+
+if (studentShareBtn) {
+  studentShareBtn.addEventListener("click", () => {
+    handleStudentShare().catch((err) => {
+      showAlert(alertId, err.message || "Failed to share student timetable.");
+    });
+  });
+}
+
 async function init() {
   ensureFacultyRole();
   try {
-    await loadFacultyTimetable();
+    const facultyResponse = await loadFacultyTimetable();
+    const selectedTimetableId = Number(facultyResponse?.selected_timetable_id || 0) || null;
+    await loadStudentTimetable(selectedTimetableId);
   } catch (err) {
     const message = String(err?.message || "").trim() || "Failed to load timetable.";
     showAlert(alertId, message);
     if (message.toLowerCase().includes("token")) {
       logout();
     } else {
-      renderPlaceholder(message);
+      renderPlaceholder({
+        header: facultyGridHeader,
+        container: facultyGridContainer,
+        footer: facultyGridFooter,
+        message,
+      });
+      renderPlaceholder({
+        header: studentGridHeader,
+        container: studentGridContainer,
+        footer: studentGridFooter,
+        message,
+      });
     }
   }
 }

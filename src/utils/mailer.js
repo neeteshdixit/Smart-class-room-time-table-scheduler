@@ -21,6 +21,32 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 }
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getFromAddress() {
+  const fromAddress = normalizeEmail(process.env.SMTP_FROM || process.env.SMTP_USER || "");
+  if (!fromAddress) {
+    throw buildMailerError("SMTP sender email is missing. Set SMTP_FROM (or SMTP_USER) in .env.");
+  }
+  if (!isValidEmail(fromAddress)) {
+    throw buildMailerError("SMTP sender email is invalid. Check SMTP_FROM/SMTP_USER in .env.");
+  }
+  return fromAddress;
+}
+
+function assertValidRecipientEmail(email) {
+  const toEmail = normalizeEmail(email);
+  if (!toEmail) {
+    throw buildMailerError("Recipient email is missing for this account. Please update account email and retry.");
+  }
+  if (!isValidEmail(toEmail)) {
+    throw buildMailerError("Recipient email is invalid for this account. Please update account email and retry.");
+  }
+  return toEmail;
+}
+
 function getTransporter() {
   if (transporter) {
     return transporter;
@@ -61,36 +87,10 @@ function getTransporter() {
   return transporter;
 }
 
-async function sendPasswordResetOtpEmail(email, otpCode) {
-  const toEmail = String(email || "").trim().toLowerCase();
-  const fromAddress = String(process.env.SMTP_FROM || process.env.SMTP_USER || "")
-    .trim()
-    .toLowerCase();
-
-  if (!fromAddress) {
-    throw buildMailerError("SMTP sender email is missing. Set SMTP_FROM (or SMTP_USER) in .env.");
-  }
-
-  if (!isValidEmail(fromAddress)) {
-    throw buildMailerError("SMTP sender email is invalid. Check SMTP_FROM/SMTP_USER in .env.");
-  }
-
-  if (!toEmail) {
-    throw buildMailerError("Recipient email is missing for this account. Please update account email and retry.");
-  }
-
-  if (!isValidEmail(toEmail)) {
-    throw buildMailerError("Recipient email is invalid for this account. Please update account email and retry.");
-  }
-
+async function sendMailWithTimeout(message) {
   try {
     const timeoutMs = getSmtpTimeoutMs();
-    const sendMailPromise = getTransporter().sendMail({
-      from: fromAddress,
-      to: toEmail,
-      subject: "Password Reset OTP",
-      text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
-    });
+    const sendMailPromise = getTransporter().sendMail(message);
     const timeoutPromise = new Promise((_, reject) => {
       const timer = setTimeout(() => {
         const timeoutErr = new Error(`SMTP request timed out after ${timeoutMs}ms`);
@@ -120,10 +120,122 @@ async function sendPasswordResetOtpEmail(email, otpCode) {
       );
     }
 
-    throw buildMailerError("Failed to send OTP email. Verify SMTP configuration and try again.");
+    throw buildMailerError("Failed to send email. Verify SMTP configuration and try again.");
   }
 }
 
+async function sendEmail({ to, subject, text, html }) {
+  const fromAddress = getFromAddress();
+  const toEmail = assertValidRecipientEmail(to);
+
+  await sendMailWithTimeout({
+    from: fromAddress,
+    to: toEmail,
+    subject: String(subject || "").trim() || "Notification",
+    text: String(text || "").trim(),
+    html: html ? String(html) : undefined,
+  });
+
+  return { email: toEmail, status: "sent" };
+}
+
+function normalizeEmailList(recipients) {
+  if (Array.isArray(recipients)) {
+    return [...new Set(recipients.map((item) => normalizeEmail(item)).filter((item) => isValidEmail(item)))];
+  }
+
+  const raw = String(recipients || "").trim();
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((item) => normalizeEmail(item)).filter((item) => isValidEmail(item)))];
+}
+
+async function sendBulkEmail(recipients, buildMessage) {
+  const normalizedRecipients = normalizeEmailList(recipients);
+  const summary = {
+    requested: Array.isArray(recipients) ? recipients.length : normalizedRecipients.length,
+    sent: [],
+    failed: [],
+    skipped: [],
+  };
+
+  if (normalizedRecipients.length === 0) {
+    return summary;
+  }
+
+  for (const recipient of normalizedRecipients) {
+    try {
+      const message = typeof buildMessage === "function" ? buildMessage(recipient) : buildMessage;
+      await sendEmail({
+        to: recipient,
+        subject: message?.subject,
+        text: message?.text,
+        html: message?.html,
+      });
+      summary.sent.push(recipient);
+    } catch (err) {
+      summary.failed.push({
+        email: recipient,
+        reason: String(err?.message || "Failed to send email"),
+      });
+    }
+  }
+
+  return summary;
+}
+
+async function sendPasswordResetOtpEmail(email, otpCode) {
+  await sendEmail({
+    to: email,
+    subject: "Password Reset OTP",
+    text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
+  });
+}
+
+async function sendTimetableGeneratedEmails(recipients, payload = {}) {
+  const subject = "New timetable generated";
+  const textLines = [
+    "New timetable generated",
+    payload.versionName ? `Version: ${payload.versionName}` : "",
+    payload.departmentName ? `Department: ${payload.departmentName}` : "",
+    payload.branchName ? `Branch: ${payload.branchName}` : "",
+    payload.semesterNumber ? `Semester: ${payload.semesterNumber}` : "",
+    payload.academicYear ? `Academic Year: ${payload.academicYear}` : "",
+    payload.pdfUrl ? `PDF: ${payload.pdfUrl}` : "",
+    payload.portalUrl ? `Faculty Portal: ${payload.portalUrl}` : "",
+  ].filter(Boolean);
+
+  return sendBulkEmail(recipients, () => ({
+    subject,
+    text: textLines.join("\n"),
+  }));
+}
+
+async function sendTimetableSharedEmails(recipients, payload = {}) {
+  const subject = payload.sectionName
+    ? `Student timetable shared for ${payload.sectionName}`
+    : "Student timetable shared";
+  const textLines = [
+    String(payload.message || "").trim() || "Please find the shared timetable details below.",
+    payload.sharedBy ? `Shared By: ${payload.sharedBy}` : "",
+    payload.versionName ? `Version: ${payload.versionName}` : "",
+    payload.sectionName ? `Section: ${payload.sectionName}` : "",
+    payload.semesterNumber ? `Semester: ${payload.semesterNumber}` : "",
+    payload.academicYear ? `Academic Year: ${payload.academicYear}` : "",
+    payload.pdfUrl ? `PDF: ${payload.pdfUrl}` : "",
+    payload.portalUrl ? `Portal: ${payload.portalUrl}` : "",
+  ].filter(Boolean);
+
+  return sendBulkEmail(recipients, () => ({
+    subject,
+    text: textLines.join("\n"),
+  }));
+}
+
 module.exports = {
+  normalizeEmailList,
+  sendBulkEmail,
+  sendEmail,
   sendPasswordResetOtpEmail,
+  sendTimetableGeneratedEmails,
+  sendTimetableSharedEmails,
 };
