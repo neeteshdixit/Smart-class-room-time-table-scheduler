@@ -3633,11 +3633,22 @@ async function generateTimetableHandler(req, res, next) {
     };
     try {
       const notificationRecipientsResult = await pool.query(
-        `SELECT DISTINCT email
-         FROM faculty
-         WHERE department_id = $1
-           AND email IS NOT NULL
-           AND email NOT ILIKE $2`,
+        `SELECT DISTINCT LOWER(recipients.email) AS email
+         FROM (
+           SELECT f.email
+           FROM faculty f
+           WHERE f.department_id = $1
+
+           UNION
+
+           SELECT fu.email
+           FROM faculty_users fu
+           JOIN faculty_departments fd ON fd.faculty_user_id = fu.id
+           WHERE fd.department_id = $1
+             AND LOWER(COALESCE(fu.role, '')) IN ('faculty', 'admin')
+         ) recipients
+         WHERE recipients.email IS NOT NULL
+           AND recipients.email NOT ILIKE $2`,
         [departmentId, `%@${SYSTEM_FACULTY_EMAIL_DOMAIN}`]
       );
       const recipientEmails = notificationRecipientsResult.rows.map((row) => String(row.email || "").trim().toLowerCase());
