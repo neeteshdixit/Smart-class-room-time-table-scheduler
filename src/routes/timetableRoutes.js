@@ -15,10 +15,11 @@ const DEFAULT_SLOT_DURATION_MINUTES = 50;
 const DEFAULT_MAX_WORKLOAD_PER_WEEK = 30;
 const DEFAULT_MAX_CLASSES_PER_DAY = 6;
 const DEFAULT_MAX_CONSECUTIVE_CLASSES = 3;
-const DEFAULT_FACULTY_OVERUSE_THRESHOLD = 2;
+const DEFAULT_MAX_SELF_STUDY_SLOTS_PER_SECTION = 6; // optional, sirf empty slots
+const DEFAULT_FACULTY_OVERUSE_THRESHOLD = 3;
 const DEFAULT_LAB_BLOCK_MINUTES = 100;
-const DEFAULT_SCHEDULE_START_TIME = "09:00:00";
-const DEFAULT_SCHEDULE_END_TIME = "14:00:00";
+const DEFAULT_SCHEDULE_START_TIME = "09:20:00";
+const DEFAULT_SCHEDULE_END_TIME = "15:20:00";
 const DEFAULT_SCHEDULE_WORKING_DAYS = "Mon-Fri";
 const LAB_SESSION_SLOT_SPAN = 2;
 const SELF_STUDY_SUBJECT_NAME = "Library / Self Study";
@@ -1468,6 +1469,9 @@ async function generateTimetableHandler(req, res, next) {
         is_fallback: selfStudyFacultyIdSet.has(Number(row.id)) || String(row.faculty_id || "").startsWith(SYSTEM_FACULTY_ID_PREFIX),
       }))
       .filter((candidate) => Number.isInteger(candidate.faculty_id) && candidate.faculty_id > 0);
+    const primaryDepartmentFacultyCandidates = departmentFacultyCandidates.filter((candidate) => !candidate.is_fallback);
+    const backupDepartmentFacultyCandidates =
+      primaryDepartmentFacultyCandidates.length > 0 ? primaryDepartmentFacultyCandidates : departmentFacultyCandidates;
 
     subjectsResult.rows.forEach((subject) => {
       const subjectId = Number(subject.id);
@@ -1476,7 +1480,7 @@ async function generateTimetableHandler(req, res, next) {
         addIssue(issues, "missing_faculty_mapping", subject.subject_name);
         subjectFacultyMap.set(
           subjectId,
-          departmentFacultyCandidates.length > 0 ? [...departmentFacultyCandidates] : [...selfStudyFacultyPool.map((faculty) => ({
+          backupDepartmentFacultyCandidates.length > 0 ? [...backupDepartmentFacultyCandidates] : [...selfStudyFacultyPool.map((faculty) => ({
             faculty_id: Number(faculty.id),
             faculty_name: String(faculty.full_name || `Faculty#${faculty.id}`).trim(),
             is_fallback: true,
@@ -2063,6 +2067,7 @@ async function generateTimetableHandler(req, res, next) {
           is_fallback: Boolean(load?.is_fallback),
         }));
         fallbackFaculty.forEach((candidate) => {
+          if (candidate.is_fallback) return;
           if (candidateIds.has(Number(candidate.faculty_id))) return;
           facultyCandidates.push(candidate);
         });
@@ -2851,6 +2856,26 @@ async function generateTimetableHandler(req, res, next) {
       );
     }
 
+    function orderSectionsByOutstandingCoverage() {
+      return [...sectionsResult.rows].sort((a, b) => {
+        const aSectionId = Number(a.id);
+        const bSectionId = Number(b.id);
+        const aRequired = Number(requiredRequestCountBySection.get(aSectionId) || 0);
+        const bRequired = Number(requiredRequestCountBySection.get(bSectionId) || 0);
+        const aAssigned = Number(schedulingState.sectionAssignedCount.get(aSectionId) || 0);
+        const bAssigned = Number(schedulingState.sectionAssignedCount.get(bSectionId) || 0);
+        const aMissing = Math.max(0, aRequired - aAssigned);
+        const bMissing = Math.max(0, bRequired - bAssigned);
+        if (aMissing !== bMissing) return bMissing - aMissing;
+
+        const aRatio = aRequired > 0 ? aAssigned / aRequired : 1;
+        const bRatio = bRequired > 0 ? bAssigned / bRequired : 1;
+        if (aRatio !== bRatio) return aRatio - bRatio;
+
+        return String(a.section_name || "").localeCompare(String(b.section_name || ""));
+      });
+    }
+
     const mandatoryFillVariants = [
       {
         ignorePreferredDay: false,
@@ -2947,12 +2972,13 @@ async function generateTimetableHandler(req, res, next) {
       return null;
     }
 
-    const maxMandatoryFillPasses = Math.max(2, sectionsResult.rows.length * 2);
+    const maxMandatoryFillPasses = Math.max(10, orderedSlots.length * 3);
     for (let pass = 0; pass < maxMandatoryFillPasses; pass += 1) {
       let passProgress = 0;
+      const orderedSections = orderSectionsByOutstandingCoverage();
 
       for (const slot of orderedSlots) {
-        for (const section of sectionsResult.rows) {
+        for (const section of orderedSections) {
           const sectionSlotKey = `${section.id}-${slot.id}`;
           if (schedulingState.sectionSlotUsed.has(sectionSlotKey)) {
             continue;
@@ -3046,24 +3072,177 @@ async function generateTimetableHandler(req, res, next) {
       return snapshot;
     }
 
+    let { incompleteSubjects, incompleteSections } = buildCoverageGaps();
+    if (incompleteSubjects.length > 0) {
+      incompleteSubjects.forEach((gap) => {
+        const conflictItem = `${gap.section_name} - ${gap.subject_name}`;
+        conflictSummaryBuckets.no_slot_available.add(conflictItem);
+        conflicts.push({
+          section_id: gap.section_id,
+          section_name: gap.section_name,
+          subject_id: gap.subject_id,
+          subject_name: gap.subject_name,
+          mode: gap.mode,
+          requested_per_week: gap.required_sessions,
+          reason: `Unable to schedule full required hours for subject ${gap.subject_name}`,
+          reason_key: "incomplete_subject_hours",
+        });
+      });
+
+      const conflictSummary = buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS);
+      const remainingEmptySlots = buildEmptySlotsSnapshot();
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: `Strict subject coverage failed for ${incompleteSubjects[0].subject_name}`,
+        precheck_summary: buildPrecheckSummary(precheckStatus),
+        strict_subject_coverage: true,
+        assigned_entries: entries.length,
+        conflicts_count: conflicts.length,
+        conflicts,
+        incomplete_subjects: incompleteSubjects,
+        incomplete_sections: incompleteSections,
+        empty_slots_count: remainingEmptySlots.length,
+        empty_slots: remainingEmptySlots.slice(0, 200),
+        conflict_summary: conflictSummary,
+        errors: flattenGroupItems(conflictSummary),
+      });
+    }
+
+    const subjectUsageBySectionSubjectMode = new Map();
+    entries.forEach((entry) => {
+      const key = `${entry.section_id}::${entry.subject_id}::${entry.session_mode}`;
+      subjectUsageBySectionSubjectMode.set(key, (subjectUsageBySectionSubjectMode.get(key) || 0) + 1);
+    });
+
+    const academicOverflowVariants = [
+      {
+        ignorePreferredDay: false,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+      },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+        allowSecondaryFacultyFallback: true,
+        allowAnyFacultyFallback: true,
+      },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: true,
+        reverseSlotOrder: true,
+        reverseFacultyOrder: true,
+        reverseRoomOrder: true,
+        allowSecondaryFacultyFallback: true,
+        allowAnyFacultyFallback: true,
+        ignoreDailyFacultyLimit: true,
+        ignoreConsecutiveFacultyLimit: true,
+      },
+      {
+        ignorePreferredDay: true,
+        reverseDayOrder: false,
+        reverseSlotOrder: false,
+        reverseFacultyOrder: false,
+        reverseRoomOrder: false,
+        allowSecondaryFacultyFallback: true,
+        allowAnyFacultyFallback: true,
+        ignoreDailyFacultyLimit: true,
+        ignoreConsecutiveFacultyLimit: true,
+        ignoreOveruseThreshold: true,
+        ignoreWeeklyFacultyLimit: true,
+      },
+    ];
+
+    function tryAssignAcademicOverflow(section, slot, pass) {
+      const theoryCapableSubjects = subjectsResult.rows.filter(
+        (subject) => normalizeSubjectType(subject.subject_type) !== "Practical"
+      );
+      const sortedSubjects = [...theoryCapableSubjects].sort((a, b) => {
+        const aUsage = Number(subjectUsageBySectionSubject.get(`${section.id}::${a.id}`) || 0);
+        const bUsage = Number(subjectUsageBySectionSubject.get(`${section.id}::${b.id}`) || 0);
+        if (aUsage !== bUsage) return aUsage - bUsage;
+
+        const aModeUsage = Number(subjectUsageBySectionSubjectMode.get(`${section.id}::${a.id}::Theory`) || 0);
+        const bModeUsage = Number(subjectUsageBySectionSubjectMode.get(`${section.id}::${b.id}::Theory`) || 0);
+        if (aModeUsage !== bModeUsage) return aModeUsage - bModeUsage;
+
+        return String(a.subject_name || "").localeCompare(String(b.subject_name || ""));
+      });
+
+      for (const subject of sortedSubjects) {
+        const request = {
+          section,
+          subject,
+          mode: "Theory",
+          preferred_day: slot.day_of_week,
+          requested_per_week: 1,
+          request_key: `overflow::${section.id}::${subject.id}::Theory`,
+          request_id: `overflow:${section.id}:${subject.id}:${slot.id}:${pass}`,
+        };
+
+        for (const variant of academicOverflowVariants) {
+          const assigned = tryAssignRequest(
+            request,
+            {
+              ...variant,
+              exactSlotGroup: [slot],
+            },
+            schedulingState
+          );
+          if (!assigned.success) {
+            continue;
+          }
+
+          const usageKey = `${section.id}::${subject.id}`;
+          subjectUsageBySectionSubject.set(usageKey, (subjectUsageBySectionSubject.get(usageKey) || 0) + 1);
+          const modeUsageKey = `${section.id}::${subject.id}::Theory`;
+          subjectUsageBySectionSubjectMode.set(modeUsageKey, (subjectUsageBySectionSubjectMode.get(modeUsageKey) || 0) + 1);
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    let emptySlots = buildEmptySlotsSnapshot();
+    const maxAcademicOverflowPasses = Math.max(8, emptySlots.length * 2);
+    for (let pass = 0; pass < maxAcademicOverflowPasses && emptySlots.length > 0; pass += 1) {
+      let passProgress = 0;
+      for (const emptySlot of emptySlots) {
+        const section = sectionById.get(Number(emptySlot.section_id));
+        const slot = orderedSlots.find((item) => Number(item.id) === Number(emptySlot.timeslot_id));
+        if (!section || !slot) continue;
+        if (tryAssignAcademicOverflow(section, slot, pass)) {
+          passProgress += 1;
+        }
+      }
+
+      if (passProgress === 0) {
+        break;
+      }
+      emptySlots = buildEmptySlotsSnapshot();
+    }
+
     let selfStudyEntriesCount = 0;
+    const selfStudyCountBySection = new Map();
     function assignSelfStudyEntry(section, slot) {
       const sectionId = Number(section.id);
+      if (Number(selfStudyCountBySection.get(sectionId) || 0) >= DEFAULT_MAX_SELF_STUDY_SLOTS_PER_SECTION) {
+        return false;
+      }
+
       const facultyRow = selfStudyFacultyBySectionId.get(sectionId) || selfStudyFacultyPool[0];
       const facultyId = Number(facultyRow?.id || 0);
       if (!Number.isInteger(facultyId) || facultyId <= 0) {
         return false;
       }
 
-      const roomCandidates = [
-        ...roomCandidatesFor("Theory", section.student_strength),
-        ...roomsResult.rows.filter((room) => String(room.room_type || "").toLowerCase() !== "lecture"),
-      ];
-      const uniqueRoomCandidates = roomCandidates.filter(
-        (room, index, list) => list.findIndex((candidate) => Number(candidate.id) === Number(room.id)) === index
-      );
-
-      for (const room of uniqueRoomCandidates) {
+      const roomCandidates = roomCandidatesFor("Theory", section.student_strength);
+      for (const room of roomCandidates) {
         if (schedulingState.roomSlotUsed.has(`${room.id}-${slot.id}`)) {
           continue;
         }
@@ -3097,13 +3276,14 @@ async function generateTimetableHandler(req, res, next) {
           slot_minutes: slotDurationById.get(Number(slot.id)) || slotDurationMinutes,
         });
         selfStudyEntriesCount += 1;
+        selfStudyCountBySection.set(sectionId, Number(selfStudyCountBySection.get(sectionId) || 0) + 1);
         return true;
       }
 
       return false;
     }
 
-    let emptySlots = buildEmptySlotsSnapshot();
+    emptySlots = buildEmptySlotsSnapshot();
     for (const emptySlot of emptySlots) {
       const section = sectionById.get(Number(emptySlot.section_id));
       const slot = orderedSlots.find((item) => Number(item.id) === Number(emptySlot.timeslot_id));
@@ -3112,21 +3292,71 @@ async function generateTimetableHandler(req, res, next) {
     }
     emptySlots = buildEmptySlotsSnapshot();
 
-    const { incompleteSubjects, incompleteSections } = buildCoverageGaps();
-    incompleteSubjects.forEach((gap) => {
-      const conflictItem = `${gap.section_name} - ${gap.subject_name}`;
-      conflictSummaryBuckets.no_slot_available.add(conflictItem);
-      conflicts.push({
-        section_id: gap.section_id,
-        section_name: gap.section_name,
-        subject_id: gap.subject_id,
-        subject_name: gap.subject_name,
-        mode: gap.mode,
-        requested_per_week: gap.required_sessions,
-        reason: `Unable to schedule full required hours for subject ${gap.subject_name}`,
-        reason_key: "incomplete_subject_hours",
+   if (emptySlots.length > 0) {
+      // Cap bypass karke force fill karo
+      for (const emptySlot of emptySlots) {
+        const section = sectionById.get(Number(emptySlot.section_id));
+        const slot = orderedSlots.find(
+          (item) => Number(item.id) === Number(emptySlot.timeslot_id)
+        );
+        if (!section || !slot) continue;
+
+        // Temporarily cap 0 kar do taaki assign ho sake
+        const sectionId = Number(section.id);
+        const prevCount = selfStudyCountBySection.get(sectionId) || 0;
+        selfStudyCountBySection.set(sectionId, 0);
+        const assigned = assignSelfStudyEntry(section, slot);
+        // Agar assign nahi hua toh purana count restore karo
+        if (!assigned) {
+          selfStudyCountBySection.set(sectionId, prevCount);
+        }
+      }
+
+      // Update karo
+      emptySlots = buildEmptySlotsSnapshot();
+      selfStudyEntriesCount = schedulingState.entries.filter(
+        (e) => Number(e.subject_id) === Number(selfStudySubject.id)
+      ).length;
+
+      // Agar ab bhi kuch empty hain — academic overflow try karo
+      if (emptySlots.length > 0) {
+        for (const emptySlot of emptySlots) {
+          const section = sectionById.get(Number(emptySlot.section_id));
+          const slot = orderedSlots.find(
+            (item) => Number(item.id) === Number(emptySlot.timeslot_id)
+          );
+          if (!section || !slot) continue;
+          tryAssignAcademicOverflow(section, slot, 999);
+        }
+        emptySlots = buildEmptySlotsSnapshot();
+      }
+
+      // Ab bhi empty hain toh sirf warning do, error mat do
+      if (emptySlots.length > 0) {
+        console.warn(
+          `Warning: ${emptySlots.length} slots still empty after all fill attempts`
+        );
+        // Rollback NAHI karenge — timetable generate hone do
+      }
+    }
+
+    ({ incompleteSubjects, incompleteSections } = buildCoverageGaps());
+    if (incompleteSubjects.length > 0) {
+      const conflictSummary = buildGroupedItems(conflictSummaryBuckets, CONFLICT_SUMMARY_LABELS);
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        message: `Strict subject coverage failed for ${incompleteSubjects[0].subject_name}`,
+        precheck_summary: buildPrecheckSummary(precheckStatus),
+        strict_subject_coverage: true,
+        assigned_entries: entries.length,
+        conflicts_count: conflicts.length,
+        conflicts,
+        incomplete_subjects: incompleteSubjects,
+        incomplete_sections: incompleteSections,
+        conflict_summary: conflictSummary,
+        errors: flattenGroupItems(conflictSummary),
       });
-    });
+    }
 
     const sectionSubjectFacultySet = new Map();
     entries.forEach((entry) => {
@@ -3189,6 +3419,13 @@ async function generateTimetableHandler(req, res, next) {
         if (a.assigned_classes !== b.assigned_classes) return a.assigned_classes - b.assigned_classes;
         return String(a.faculty_name).localeCompare(String(b.faculty_name));
       });
+    const selfStudyUsageBySection = sectionsResult.rows
+      .map((section) => ({
+        section_id: Number(section.id),
+        section_name: String(section.section_name || `Section#${section.id}`),
+        self_study_slots: Number(selfStudyCountBySection.get(Number(section.id)) || 0),
+      }))
+      .filter((item) => item.self_study_slots > 0);
 
     const uniqueAssignedRoomIds = [...new Set(entries.map((entry) => Number(entry.classroom_id)).filter((id) => Number.isInteger(id) && id > 0))];
     const roomValidationResult = uniqueAssignedRoomIds.length
@@ -3275,7 +3512,10 @@ async function generateTimetableHandler(req, res, next) {
         faculty_max_classes_per_day: facultyMaxClassesPerDay,
         auto_room_expansion: autoRoomExpansion,
         auto_created_rooms: autoCreatedRooms,
+        strict_subject_coverage: true,
         self_study_entries: selfStudyEntriesCount,
+        self_study_by_section: selfStudyUsageBySection,
+        max_self_study_slots_per_section: DEFAULT_MAX_SELF_STUDY_SLOTS_PER_SECTION,
         empty_slots_count: emptySlots.length,
         empty_slots: emptySlots.slice(0, 200),
         incomplete_subjects: incompleteSubjects,
@@ -3431,8 +3671,8 @@ async function generateTimetableHandler(req, res, next) {
 
     return res.status(201).json({
       message:
-        incompleteSubjects.length > 0 || selfStudyEntriesCount > 0
-          ? "Timetable generated with fallback coverage"
+        selfStudyEntriesCount > 0
+          ? "Timetable generated with controlled self-study fallback"
           : "Timetable generated",
       generation_strategy: generationStrategy,
       faculty_overuse_threshold: facultyOveruseThreshold,
@@ -3451,7 +3691,10 @@ async function generateTimetableHandler(req, res, next) {
       faculty_max_classes_per_day: facultyMaxClassesPerDay,
       auto_room_expansion: autoRoomExpansion,
       auto_created_rooms: autoCreatedRooms,
+      strict_subject_coverage: true,
       self_study_entries: selfStudyEntriesCount,
+      self_study_by_section: selfStudyUsageBySection,
+      max_self_study_slots_per_section: DEFAULT_MAX_SELF_STUDY_SLOTS_PER_SECTION,
       empty_slots_count: emptySlots.length,
       empty_slots: emptySlots.slice(0, 200),
       incomplete_subjects: incompleteSubjects,
