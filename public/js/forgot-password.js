@@ -24,9 +24,6 @@ if (forgotPasswordForm) {
       });
 
       sessionStorage.setItem("reset_email", result.email);
-      if (result.otp_preview) {
-        sessionStorage.setItem("reset_otp_preview", result.otp_preview);
-      }
 
       showAlert("forgotPasswordAlert", result.message, "success");
       setTimeout(() => {

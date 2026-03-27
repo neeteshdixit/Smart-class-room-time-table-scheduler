@@ -2,7 +2,6 @@ const forgotOtpForm = document.getElementById("forgotOtpForm");
 const verifyResetOtpBtn = document.getElementById("verifyResetOtpBtn");
 const resendResetOtpBtn = document.getElementById("resendResetOtpBtn");
 const otpEmailHint = document.getElementById("otpEmailHint");
-const resetOtpPreview = document.getElementById("resetOtpPreview");
 
 const resetEmail = sessionStorage.getItem("reset_email");
 
@@ -12,11 +11,6 @@ if (!resetEmail) {
 
 if (otpEmailHint && resetEmail) {
   otpEmailHint.textContent = `Email: ${resetEmail}`;
-}
-
-const previewCode = sessionStorage.getItem("reset_otp_preview");
-if (resetOtpPreview && previewCode) {
-  resetOtpPreview.textContent = `Development OTP: ${previewCode}`;
 }
 
 if (forgotOtpForm) {
@@ -36,7 +30,6 @@ if (forgotOtpForm) {
       });
 
       sessionStorage.setItem("reset_otp_verified_email", resetEmail);
-      sessionStorage.removeItem("reset_otp_preview");
       showAlert("forgotOtpAlert", "OTP verified successfully", "success");
       setTimeout(() => {
         window.location.href = "/reset-password.html";
@@ -62,13 +55,6 @@ if (resendResetOtpBtn) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: resetEmail }),
       });
-
-      if (result.otp_preview) {
-        sessionStorage.setItem("reset_otp_preview", result.otp_preview);
-        if (resetOtpPreview) {
-          resetOtpPreview.textContent = `Development OTP: ${result.otp_preview}`;
-        }
-      }
 
       showAlert("forgotOtpAlert", result.message, "success");
     } catch (err) {

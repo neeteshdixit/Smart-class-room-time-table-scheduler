@@ -12,7 +12,7 @@ const {
   updatePasswordHash,
   updateLastLogin,
 } = require("../models/facultyUserModel");
-const { createOtpVerification, findValidOtp, markOtpUsed } = require("../models/otpModel");
+const { createOtpVerification, findValidOtp, markOtpUsed, invalidateActiveOtps } = require("../models/otpModel");
 const {
   cleanupExpiredResetOtps,
   deleteResetOtpsByUser,
@@ -32,8 +32,8 @@ const {
   findOrCreateSubjectByName,
 } = require("../models/academicLookupModel");
 const { addFacultyDepartments, addFacultyUserSubjects } = require("../models/facultyMappingModel");
-const { generateOtp, maskMobileNumber } = require("../utils/otp");
-const { sendPasswordResetOtpEmail } = require("../utils/mailer");
+const { generateOtp } = require("../utils/otp");
+const { sendLoginOtpEmail, sendPasswordResetOtpEmail } = require("../utils/mailer");
 const { logActivity } = require("../utils/activity");
 
 const ROLE_FACULTY = "FACULTY";
@@ -58,22 +58,6 @@ function getResetOtpExpiryMinutes() {
 
 function getResetOtpMaxAttempts() {
   return toPositiveInt(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS, 5);
-}
-
-function isTruthyEnvFlag(value) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
-}
-
-function shouldIncludeOtpPreview() {
-  const raw = String(process.env.OTP_PREVIEW_ENABLED || "").trim();
-  if (raw) {
-    return isTruthyEnvFlag(raw);
-  }
-  // Default disabled in production, enabled elsewhere for easier local testing.
-  return String(process.env.NODE_ENV || "").trim().toLowerCase() === "development";
 }
 
 function normalizeRole(inputRole) {
@@ -354,20 +338,29 @@ async function login(payload) {
   }
 
   const otpCode = generateOtp(6);
+  await invalidateActiveOtps(user.id);
   await createOtpVerification(user.id, user.mobile_number, otpCode);
+
+  try {
+    await sendLoginOtpEmail(user.email, otpCode);
+  } catch (err) {
+    await invalidateActiveOtps(user.id);
+    if (err.statusCode) {
+      throw err;
+    }
+    throw buildError(500, "Unable to send OTP email right now. Please try again.");
+  }
 
   const loginToken = jwt.sign({ userId: user.id, otpPending: true }, process.env.JWT_SECRET, {
     expiresIn: process.env.LOGIN_OTP_TOKEN_EXPIRES_IN || "10m",
   });
 
-  await logActivity(user.id, "Login Initiated", `OTP sent to ${maskMobileNumber(user.mobile_number)}`);
+  await logActivity(user.id, "Login Initiated", "OTP sent to registered email");
 
   return {
-    message: "Credentials verified. OTP sent to your registered mobile number.",
+    message: "Credentials verified. OTP sent to your registered email.",
     role: normalizedRole.toUpperCase(),
     login_token: loginToken,
-    mobile_number_masked: maskMobileNumber(user.mobile_number),
-    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }
 
@@ -440,12 +433,23 @@ async function resendOtp(payload) {
   }
 
   const otpCode = generateOtp(6);
+  await invalidateActiveOtps(user.id);
   await createOtpVerification(user.id, user.mobile_number, otpCode);
-  await logActivity(user.id, "OTP Resent", `OTP resent to ${maskMobileNumber(user.mobile_number)}`);
+
+  try {
+    await sendLoginOtpEmail(user.email, otpCode);
+  } catch (err) {
+    await invalidateActiveOtps(user.id);
+    if (err.statusCode) {
+      throw err;
+    }
+    throw buildError(500, "Unable to send OTP email right now. Please try again.");
+  }
+
+  await logActivity(user.id, "OTP Resent", "OTP resent to registered email");
 
   return {
-    message: "OTP resent successfully",
-    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
+    message: "OTP resent successfully to your registered email.",
   };
 }
 
@@ -467,30 +471,21 @@ async function forgotPassword(payload) {
   await deleteResetOtpsByUser(user.id);
   await createPasswordResetOtp(user.id, user.email, otpCode, expiryMinutes);
 
-  let emailDelivery = "sent";
   try {
     await sendPasswordResetOtpEmail(user.email, otpCode);
   } catch (err) {
-    if (!shouldIncludeOtpPreview()) {
-      await deleteResetOtpsByUser(user.id);
-      if (err.statusCode) {
-        throw err;
-      }
-      throw buildError(500, "Unable to send OTP email right now. Please try again.");
+    await deleteResetOtpsByUser(user.id);
+    if (err.statusCode) {
+      throw err;
     }
-    emailDelivery = "preview_only";
+    throw buildError(500, "Unable to send OTP email right now. Please try again.");
   }
 
   await logActivity(user.id, "Forgot Password Requested", "Password reset OTP sent to registered email");
 
   return {
-    message:
-      emailDelivery === "sent"
-        ? "OTP sent to your registered email"
-        : "SMTP delivery failed. OTP generated in preview mode for development.",
+    message: "OTP sent to your registered email",
     email: user.email,
-    delivery: emailDelivery,
-    otp_preview: shouldIncludeOtpPreview() ? otpCode : undefined,
   };
 }
 

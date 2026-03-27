@@ -191,6 +191,14 @@ async function sendPasswordResetOtpEmail(email, otpCode) {
   });
 }
 
+async function sendLoginOtpEmail(email, otpCode) {
+  await sendEmail({
+    to: email,
+    subject: "Login OTP",
+    text: `Your login OTP is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
+  });
+}
+
 async function sendTimetableGeneratedEmails(recipients, payload = {}) {
   const subject = "New timetable generated";
   const textLines = [
@@ -235,6 +243,7 @@ module.exports = {
   normalizeEmailList,
   sendBulkEmail,
   sendEmail,
+  sendLoginOtpEmail,
   sendPasswordResetOtpEmail,
   sendTimetableGeneratedEmails,
   sendTimetableSharedEmails,

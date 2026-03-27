@@ -26,9 +26,19 @@ async function markOtpUsed(id) {
   await pool.query(`UPDATE otp_verifications SET is_used = TRUE WHERE id = $1`, [id]);
 }
 
+async function invalidateActiveOtps(facultyUserId) {
+  await pool.query(
+    `UPDATE otp_verifications
+     SET is_used = TRUE
+     WHERE faculty_user_id = $1
+       AND is_used = FALSE`,
+    [facultyUserId]
+  );
+}
+
 module.exports = {
   createOtpVerification,
   findValidOtp,
   markOtpUsed,
+  invalidateActiveOtps,
 };
-

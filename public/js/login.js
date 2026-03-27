@@ -25,9 +25,6 @@ if (loginForm) {
       });
 
       sessionStorage.setItem("login_token", result.login_token);
-      if (result.otp_preview) {
-        sessionStorage.setItem("otp_preview", result.otp_preview);
-      }
 
       showAlert("loginAlert", result.message, "success");
       setTimeout(() => {

@@ -1,18 +1,10 @@
 const otpForm = document.getElementById("otpForm");
 const verifyOtpBtn = document.getElementById("verifyOtpBtn");
 const resendOtpBtn = document.getElementById("resendOtpBtn");
-const otpPreview = document.getElementById("otpPreview");
 const loginToken = sessionStorage.getItem("login_token");
 
 if (!loginToken) {
   window.location.href = "/login.html";
-}
-
-const previewCode = sessionStorage.getItem("otp_preview");
-if (otpPreview && previewCode) {
-  otpPreview.textContent = `Development OTP: ${previewCode}`;
-} else if (otpPreview) {
-  otpPreview.textContent = "OTP preview not received yet. Tap Resend OTP.";
 }
 
 function redirectByRole(userRole) {
@@ -44,7 +36,6 @@ if (otpForm) {
       });
 
       setAuthToken(result.token);
-      sessionStorage.removeItem("otp_preview");
       showAlert("otpAlert", "OTP verified. Redirecting...", "success");
       setTimeout(() => {
         redirectByRole(result?.user?.role);
@@ -70,13 +61,7 @@ if (resendOtpBtn) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ login_token: loginToken }),
       });
-      if (result.otp_preview) {
-        otpPreview.textContent = `Development OTP: ${result.otp_preview}`;
-        sessionStorage.setItem("otp_preview", result.otp_preview);
-      } else if (otpPreview) {
-        otpPreview.textContent = "Server did not return OTP preview.";
-      }
-      showAlert("otpAlert", "OTP resent successfully.", "success");
+      showAlert("otpAlert", result?.message || "OTP resent successfully.", "success");
     } catch (err) {
       showAlert("otpAlert", err.message);
     } finally {

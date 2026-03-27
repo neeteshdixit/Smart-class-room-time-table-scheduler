@@ -40,7 +40,6 @@ if (resetPasswordForm) {
       });
 
       sessionStorage.removeItem("reset_email");
-      sessionStorage.removeItem("reset_otp_preview");
       sessionStorage.removeItem("reset_otp_verified_email");
       window.location.href = `/login.html?message=${encodeURIComponent("Password reset successful")}`;
     } catch (err) {

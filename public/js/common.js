@@ -229,7 +229,6 @@ async function logout() {
   } finally {
     clearAuthToken();
     sessionStorage.removeItem("login_token");
-    sessionStorage.removeItem("otp_preview");
     window.location.replace(LOGIN_PAGE_PATH);
   }
 }

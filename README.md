@@ -77,7 +77,6 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/smart_scheduler
 JWT_SECRET=replace_with_a_secure_random_secret
 JWT_EXPIRES_IN=30m
 LOGIN_OTP_TOKEN_EXPIRES_IN=10m
-OTP_PREVIEW_ENABLED=true
 PASSWORD_RESET_OTP_EXPIRES_MINUTES=5
 PASSWORD_RESET_OTP_MAX_ATTEMPTS=5
 SMTP_HOST=smtp.gmail.com
@@ -166,8 +165,8 @@ Optional payload flags:
 - `GET /api/faculty/timetable`
 
 ## OTP Behavior
-- Login/resend and forgot-password responses include `otp_preview` by default for easier testing.
-- To hide preview in production, set `OTP_PREVIEW_ENABLED=false`.
+- All OTPs are delivered only to the registered email address.
+- OTP values are never returned in API responses.
 
 ## SMTP Troubleshooting
 - If forgot-password stays on "Sending..." for too long, set `SMTP_TIMEOUT_MS` (default `15000`) to fail fast with a clear error.
