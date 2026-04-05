@@ -6,6 +6,7 @@ const facultyTimetableSelect = document.getElementById("facultyTimetableSelect")
 const facultyGridHeader = document.getElementById("facultyGridHeader");
 const facultyGridContainer = document.getElementById("facultyGridContainer");
 const facultyGridFooter = document.getElementById("facultyGridFooter");
+const studentTimetableCard = document.getElementById("studentTimetableCard");
 const studentTimetableSelect = document.getElementById("studentTimetableSelect");
 const studentSectionSelect = document.getElementById("studentSectionSelect");
 const studentDownloadBtn = document.getElementById("studentDownloadBtn");
@@ -23,6 +24,9 @@ const mentorGridFooter = document.getElementById("mentorGridFooter");
 const state = {
   faculty: null,
   student: null,
+  access: {
+    isMentor: false,
+  },
   mentor: {
     sections: [],
     selectedSectionId: null,
@@ -180,18 +184,35 @@ function renderPlaceholder({ header, container, footer, message }) {
   }
 }
 
+function setStudentTimetableVisibility(isVisible) {
+  if (!studentTimetableCard) return;
+  studentTimetableCard.classList.toggle("d-none", !Boolean(isVisible));
+}
+
 function renderTimetableGrid({ header, container, footer, timetable, entries, timeSlots, placeholderMessage, detailFormatter }) {
   if (!timetable) {
     renderPlaceholder({ header, container, footer, message: placeholderMessage });
     return;
   }
 
+  const rawTimeSlots = Array.isArray(timeSlots) ? timeSlots : [];
   const slotColumns = Array.from(
-    new Map(
-      (Array.isArray(timeSlots) ? timeSlots : [])
-        .map((slot) => [Number(slot.slot_number), slot])
-        .sort((a, b) => a[0] - b[0])
-    ).values()
+    rawTimeSlots
+      .slice()
+      .sort(
+        (a, b) =>
+          Number(a.slot_number) - Number(b.slot_number) ||
+          Number(a.day_of_week) - Number(b.day_of_week)
+      )
+      .reduce((accumulator, slot) => {
+        const slotNumber = Number(slot.slot_number);
+        if (!Number.isInteger(slotNumber)) return accumulator;
+        if (!accumulator.has(slotNumber)) {
+          accumulator.set(slotNumber, slot);
+        }
+        return accumulator;
+      }, new Map())
+      .values()
   ).sort((a, b) => Number(a.slot_number) - Number(b.slot_number));
 
   if (!slotColumns.length) {
@@ -199,17 +220,20 @@ function renderTimetableGrid({ header, container, footer, timetable, entries, ti
     return;
   }
 
+  const entryRows = Array.isArray(entries) ? entries : [];
   const workingDayNumbers = Array.from(
-    new Set(slotColumns.map((slot) => Number(slot.day_of_week)).filter((value) => Number.isInteger(value) && value >= 1 && value <= 7))
+    new Set(
+      [...rawTimeSlots.map((slot) => Number(slot.day_of_week)), ...entryRows.map((entry) => Number(entry.day_of_week))].filter(
+        (value) => Number.isInteger(value) && value >= 1 && value <= 7
+      )
+    )
   ).sort((a, b) => a - b);
   if (!workingDayNumbers.length) {
     renderPlaceholder({ header, container, footer, message: "No working days found." });
     return;
   }
 
-  const entryByDayAndSlot = new Map(
-    (Array.isArray(entries) ? entries : []).map((entry) => [`${entry.day_of_week}-${entry.slot_number}`, entry])
-  );
+  const entryByDayAndSlot = new Map(entryRows.map((entry) => [`${entry.day_of_week}-${entry.slot_number}`, entry]));
   const breakInsertIndex = detectBreakInsertIndex(slotColumns);
 
   const headerCells = slotColumns
@@ -440,28 +464,34 @@ async function loadMentorSections() {
     headers: authHeaders(),
   });
 
+  const isMentor = Boolean(result?.faculty?.is_mentor);
   const sections = Array.isArray(result?.sections) ? result.sections : [];
+  state.access.isMentor = isMentor;
   state.mentor.sections = sections;
 
-  if (!mentorTimetableCard) return sections;
+  if (!mentorTimetableCard) {
+    return { isMentor, sections };
+  }
 
-  if (!sections.length) {
+  if (!isMentor || !sections.length) {
     mentorTimetableCard.classList.add("d-none");
     renderPlaceholder({
       header: mentorGridHeader,
       container: mentorGridContainer,
       footer: mentorGridFooter,
-      message: "Mentor access is not enabled for this account.",
+      message: isMentor
+        ? "No mentor sections are assigned to this account."
+        : "Mentor access is not enabled for this account.",
     });
     renderMentorSectionControls([]);
     renderMentorTimetableControls({ timetables: [] });
-    return sections;
+    return { isMentor, sections };
   }
 
   mentorTimetableCard.classList.remove("d-none");
   state.mentor.selectedSectionId = Number(state.mentor.selectedSectionId || sections[0].id);
   renderMentorSectionControls(sections);
-  return sections;
+  return { isMentor, sections };
 }
 
 async function loadMentorTimetable(sectionId, timetableId = null) {
@@ -516,6 +546,12 @@ async function loadFacultyTimetable(timetableId = null) {
 }
 
 async function loadStudentTimetable(timetableId = null, sectionId = null) {
+  if (!state.access.isMentor) {
+    state.student = null;
+    setStudentTimetableVisibility(false);
+    return null;
+  }
+
   const params = new URLSearchParams();
   if (timetableId) params.set("timetable_id", String(timetableId));
   if (sectionId) params.set("section_id", String(sectionId));
@@ -575,7 +611,9 @@ if (facultyTimetableSelect) {
 
     try {
       await loadFacultyTimetable(selectedId);
-      await loadStudentTimetable(selectedId, Number(state.student?.selected_section_id || 0) || null);
+      if (state.access.isMentor) {
+        await loadStudentTimetable(selectedId, Number(state.student?.selected_section_id || 0) || null);
+      }
     } catch (err) {
       showAlert(alertId, err.message || "Failed to load timetable.");
     }
@@ -672,11 +710,17 @@ async function init() {
   try {
     const facultyResponse = await loadFacultyTimetable();
     const selectedTimetableId = Number(facultyResponse?.selected_timetable_id || 0) || null;
-    await loadStudentTimetable(selectedTimetableId);
+    const mentorAccess = await loadMentorSections();
 
-    const mentorSections = await loadMentorSections();
-    if (mentorSections.length > 0) {
-      const initialSectionId = Number(mentorSections[0].id);
+    setStudentTimetableVisibility(mentorAccess.isMentor);
+    if (mentorAccess.isMentor) {
+      await loadStudentTimetable(selectedTimetableId);
+    } else {
+      state.student = null;
+    }
+
+    if (mentorAccess.sections.length > 0) {
+      const initialSectionId = Number(mentorAccess.sections[0].id);
       await loadMentorTimetable(initialSectionId);
     }
   } catch (err) {

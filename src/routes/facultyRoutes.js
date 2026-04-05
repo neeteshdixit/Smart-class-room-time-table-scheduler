@@ -71,7 +71,7 @@ function resolveUploadFileAbsolutePath(publicPath) {
 
 async function resolveFacultyIdentity(userId) {
   const userResult = await pool.query(
-    `SELECT id, faculty_id, full_name, email, mobile_number, role
+    `SELECT id, faculty_id, full_name, email, mobile_number, role, is_mentor
      FROM faculty_users
      WHERE id = $1
      LIMIT 1`,
@@ -96,6 +96,10 @@ async function resolveFacultyIdentity(userId) {
   const mappedFacultyIds = facultyResult.rows.map((row) => Number(row.id)).filter((id) => Number.isInteger(id) && id > 0);
 
   return { user, mappedFacultyIds };
+}
+
+function isMentorUser(user) {
+  return Boolean(user?.is_mentor);
 }
 
 async function listAccessibleTimetables(mappedFacultyIds, semesterId = null) {
@@ -223,6 +227,7 @@ router.get("/timetable", authRequired, requireRoles("faculty"), async (req, res,
           faculty_id: user.faculty_id,
           full_name: user.full_name,
           role: user.role,
+          is_mentor: isMentorUser(user),
         },
         timetables: [],
         selected_timetable_id: null,
@@ -242,6 +247,7 @@ router.get("/timetable", authRequired, requireRoles("faculty"), async (req, res,
           faculty_id: user.faculty_id,
           full_name: user.full_name,
           role: user.role,
+          is_mentor: isMentorUser(user),
         },
         timetables: [],
         selected_timetable_id: null,
@@ -306,6 +312,7 @@ router.get("/timetable", authRequired, requireRoles("faculty"), async (req, res,
         faculty_id: user.faculty_id,
         full_name: user.full_name,
         role: user.role,
+        is_mentor: isMentorUser(user),
         mapped_faculty_ids: mappedFacultyIds,
       },
       timetables: timetableRows,
@@ -328,6 +335,10 @@ router.get("/student-timetable", authRequired, requireRoles("faculty"), async (r
       return res.status(404).json({ message: "Faculty account not found" });
     }
 
+    if (!isMentorUser(user)) {
+      return res.status(403).json({ message: "Only mentors can access student timetable." });
+    }
+
     if (!mappedFacultyIds.length) {
       return res.json({
         faculty: {
@@ -335,6 +346,7 @@ router.get("/student-timetable", authRequired, requireRoles("faculty"), async (r
           faculty_id: user.faculty_id,
           full_name: user.full_name,
           role: user.role,
+          is_mentor: isMentorUser(user),
         },
         timetables: [],
         selected_timetable_id: null,
@@ -362,6 +374,7 @@ router.get("/student-timetable", authRequired, requireRoles("faculty"), async (r
         faculty_id: user.faculty_id,
         full_name: user.full_name,
         role: user.role,
+        is_mentor: isMentorUser(user),
         mapped_faculty_ids: mappedFacultyIds,
       },
       ...payload,
@@ -374,7 +387,15 @@ router.get("/student-timetable", authRequired, requireRoles("faculty"), async (r
 
 router.get("/student-timetable/download", authRequired, requireRoles("faculty"), async (req, res, next) => {
   try {
-    const { mappedFacultyIds } = await resolveFacultyIdentity(req.user.userId);
+    const { user, mappedFacultyIds } = await resolveFacultyIdentity(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "Faculty account not found" });
+    }
+
+    if (!isMentorUser(user)) {
+      return res.status(403).json({ message: "Only mentors can access student timetable." });
+    }
+
     if (!mappedFacultyIds.length) {
       return res.status(404).json({ message: "No timetable is assigned to this faculty." });
     }
@@ -426,6 +447,10 @@ const shareStudentTimetableMiddleware = [
       const { user, mappedFacultyIds } = await resolveFacultyIdentity(req.user.userId);
       if (!user) {
         return res.status(404).json({ message: "Faculty account not found" });
+      }
+
+      if (!isMentorUser(user)) {
+        return res.status(403).json({ message: "Only mentors can access student timetable." });
       }
 
       if (!mappedFacultyIds.length) {
