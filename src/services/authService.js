@@ -12,17 +12,6 @@ const {
   updatePasswordHash,
   updateLastLogin,
 } = require("../models/facultyUserModel");
-const { createOtpVerification, findValidOtp, markOtpUsed, invalidateActiveOtps } = require("../models/otpModel");
-const {
-  cleanupExpiredResetOtps,
-  deleteResetOtpsByUser,
-  createPasswordResetOtp,
-  findLatestActiveResetOtpByEmail,
-  incrementResetOtpAttempt,
-  markResetOtpVerified,
-  findLatestVerifiedResetOtpByEmail,
-  deleteResetOtpById,
-} = require("../models/passwordResetModel");
 const {
   listDepartments,
   listSubjects,
@@ -38,6 +27,40 @@ const { addSectionMentorMappings } = require("../models/mentorMappingModel");
 const { generateOtp } = require("../utils/otp");
 const { sendLoginOtpEmail, sendPasswordResetOtpEmail } = require("../utils/mailer");
 const { logActivity } = require("../utils/activity");
+const {
+  consumeLoginOtpChallenge,
+  consumePasswordResetVerification,
+  getLoginOtpChallenge,
+  hasValidPasswordResetVerification,
+  invalidateLoginOtpChallenge,
+  invalidatePasswordResetOtp,
+  resetLoginOtpChallenge,
+  setLoginOtpChallenge,
+  setPasswordResetOtp,
+  verifyPasswordResetOtp,
+} = require("../utils/transientOtpStore");
+const {
+  buildRefreshCookieOptions,
+  createAccessTokenForUser,
+  createRefreshToken,
+  createRefreshTokenId,
+  getLoginOtpTokenExpiresIn,
+  getLoginOtpTtlMs,
+  getRefreshTokenCookieName,
+  getRefreshTokenTtlMs,
+  parseDurationToMs,
+  readRefreshTokenFromRequest,
+  verifyRefreshToken,
+} = require("../utils/authTokens");
+const {
+  createRefreshTokenRecord,
+  deleteExpiredRefreshTokens,
+  findRefreshTokenByTokenId,
+  hashRefreshToken,
+  revokeAllRefreshTokensForUser,
+  revokeRefreshTokenByRawToken,
+  revokeRefreshTokenByTokenId,
+} = require("../models/refreshTokenModel");
 
 const ROLE_FACULTY = "FACULTY";
 const ROLE_ADMIN = "ADMIN";
@@ -58,11 +81,34 @@ function toPositiveInt(rawValue, fallback) {
 }
 
 function getResetOtpExpiryMinutes() {
-  return toPositiveInt(process.env.PASSWORD_RESET_OTP_EXPIRES_MINUTES, 5);
+  return toPositiveInt(process.env.PASSWORD_RESET_OTP_EXPIRES_MINUTES, 2);
 }
 
 function getResetOtpMaxAttempts() {
   return toPositiveInt(process.env.PASSWORD_RESET_OTP_MAX_ATTEMPTS, 5);
+}
+
+function getResetOtpTtlMs() {
+  const minutes = getResetOtpExpiryMinutes();
+  return minutes * 60 * 1000;
+}
+
+function getResetVerificationTtlMs() {
+  const fallbackMs = 10 * 60 * 1000;
+  const raw = String(process.env.PASSWORD_RESET_VERIFIED_TTL || "").trim();
+  if (raw) {
+    return parseDurationToMs(raw, fallbackMs);
+  }
+  const minutes = toPositiveInt(process.env.PASSWORD_RESET_VERIFIED_TTL_MINUTES, 10);
+  return minutes * 60 * 1000;
+}
+
+function getLoginOtpExpiryMinutes() {
+  return Math.max(1, Math.ceil(getLoginOtpTtlMs() / (60 * 1000)));
+}
+
+function addMilliseconds(date, ms) {
+  return new Date(date.getTime() + ms);
 }
 
 function normalizeRole(inputRole) {
@@ -367,6 +413,57 @@ async function adminSignup(payload, uploadedFile = null) {
   return signup(adminPayload, null, uploadedFile, { allowAdminRole: true });
 }
 
+function getRefreshCookieConfig() {
+  return {
+    cookieName: getRefreshTokenCookieName(),
+    cookieOptions: buildRefreshCookieOptions(),
+  };
+}
+
+function parseLoginToken(loginToken) {
+  try {
+    return jwt.verify(loginToken, process.env.JWT_SECRET);
+  } catch (err) {
+    if (err?.name === "TokenExpiredError") {
+      throw buildError(401, "Login session expired. Please login again.");
+    }
+    throw buildError(401, "Invalid login token");
+  }
+}
+
+async function issueSessionTokens(user, options = {}) {
+  const refreshTokenId = createRefreshTokenId();
+  const accessToken = createAccessTokenForUser(user);
+  const refreshToken = createRefreshToken({ userId: user.id, tokenId: refreshTokenId });
+  const refreshTokenExpiresAt = addMilliseconds(new Date(), getRefreshTokenTtlMs());
+  const db = options.db || pool;
+
+  if (options.rotateFromTokenId) {
+    await revokeRefreshTokenByTokenId(
+      String(options.rotateFromTokenId),
+      { replacedByTokenId: refreshTokenId },
+      db
+    );
+  }
+
+  await createRefreshTokenRecord(
+    {
+      userId: user.id,
+      tokenId: refreshTokenId,
+      refreshToken,
+      expiresAt: refreshTokenExpiresAt,
+    },
+    db
+  );
+
+  return {
+    accessToken,
+    refreshToken,
+    refreshTokenId,
+    refreshTokenExpiresAt,
+  };
+}
+
 async function login(payload) {
   const user = await findByIdentifier(payload.identifier);
 
@@ -387,21 +484,27 @@ async function login(payload) {
   }
 
   const otpCode = generateOtp(6);
-  await invalidateActiveOtps(user.id);
-  await createOtpVerification(user.id, user.mobile_number, otpCode);
+  const challengeId = createRefreshTokenId();
+  setLoginOtpChallenge({
+    challengeId,
+    userId: user.id,
+    email: user.email,
+    otpCode,
+    ttlMs: getLoginOtpTtlMs(),
+  });
 
   try {
-    await sendLoginOtpEmail(user.email, otpCode);
+    await sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes());
   } catch (err) {
-    await invalidateActiveOtps(user.id);
+    invalidateLoginOtpChallenge(challengeId);
     if (err.statusCode) {
       throw err;
     }
     throw buildError(500, "Unable to send OTP email right now. Please try again.");
   }
 
-  const loginToken = jwt.sign({ userId: user.id, otpPending: true }, process.env.JWT_SECRET, {
-    expiresIn: process.env.LOGIN_OTP_TOKEN_EXPIRES_IN || "10m",
+  const loginToken = jwt.sign({ userId: user.id, otpPending: true, challengeId }, process.env.JWT_SECRET, {
+    expiresIn: getLoginOtpTokenExpiresIn(),
   });
 
   await logActivity(user.id, "Login Initiated", "OTP sent to registered email");
@@ -414,26 +517,20 @@ async function login(payload) {
 }
 
 async function verifyLoginOtp(payload) {
-  let decoded;
-  try {
-    decoded = jwt.verify(payload.login_token, process.env.JWT_SECRET);
-  } catch (err) {
-    if (err.name === "TokenExpiredError") {
-      throw buildError(401, "Login session expired. Please login again.");
-    }
-    throw buildError(401, "Invalid login token");
-  }
+  const decoded = parseLoginToken(payload.login_token);
 
-  if (!decoded.otpPending) {
+  if (!decoded.otpPending || !decoded.challengeId) {
     throw buildError(400, "Invalid login token state");
   }
 
-  const otpRow = await findValidOtp(decoded.userId, payload.otp_code);
-  if (!otpRow) {
+  const verified = consumeLoginOtpChallenge({
+    challengeId: decoded.challengeId,
+    userId: decoded.userId,
+    otpCode: payload.otp_code,
+  });
+  if (!verified.ok) {
     throw buildError(401, "Invalid or expired OTP");
   }
-
-  await markOtpUsed(otpRow.id);
 
   const user = await findBasicById(decoded.userId);
   if (!user) {
@@ -443,37 +540,23 @@ async function verifyLoginOtp(payload) {
   await updateLastLogin(user.id);
   await logActivity(user.id, "Login Successful", "OTP verified and dashboard access granted");
 
-  const token = jwt.sign(
-    {
-      userId: user.id,
-      facultyId: user.faculty_id,
-      role: user.role,
-      fullName: user.full_name,
-      isMentor: Boolean(user.is_mentor),
-    },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || "30m" }
-  );
+  const tokens = await issueSessionTokens(user);
+  await deleteExpiredRefreshTokens().catch(() => {});
 
   return {
     message: "OTP verified successfully",
-    token,
+    token: tokens.accessToken,
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    refresh_expires_at: tokens.refreshTokenExpiresAt.toISOString(),
     user,
   };
 }
 
 async function resendOtp(payload) {
-  let decoded;
-  try {
-    decoded = jwt.verify(payload.login_token, process.env.JWT_SECRET);
-  } catch (err) {
-    if (err.name === "TokenExpiredError") {
-      throw buildError(401, "Login session expired. Please login again.");
-    }
-    throw buildError(401, "Invalid login token");
-  }
+  const decoded = parseLoginToken(payload.login_token);
 
-  if (!decoded.otpPending) {
+  if (!decoded.otpPending || !decoded.challengeId) {
     throw buildError(400, "Invalid login token state");
   }
 
@@ -482,14 +565,22 @@ async function resendOtp(payload) {
     throw buildError(404, "User not found");
   }
 
+  const challenge = getLoginOtpChallenge(decoded.challengeId);
+  if (!challenge) {
+    throw buildError(401, "Login session expired. Please login again.");
+  }
+
   const otpCode = generateOtp(6);
-  await invalidateActiveOtps(user.id);
-  await createOtpVerification(user.id, user.mobile_number, otpCode);
+  resetLoginOtpChallenge({
+    challengeId: decoded.challengeId,
+    otpCode,
+    ttlMs: getLoginOtpTtlMs(),
+  });
 
   try {
-    await sendLoginOtpEmail(user.email, otpCode);
+    await sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes());
   } catch (err) {
-    await invalidateActiveOtps(user.id);
+    invalidateLoginOtpChallenge(decoded.challengeId);
     if (err.statusCode) {
       throw err;
     }
@@ -514,17 +605,20 @@ async function forgotPassword(payload) {
     throw buildError(404, "Account not found");
   }
 
-  await cleanupExpiredResetOtps();
-
   const otpCode = generateOtp(6);
   const expiryMinutes = getResetOtpExpiryMinutes();
-  await deleteResetOtpsByUser(user.id);
-  await createPasswordResetOtp(user.id, user.email, otpCode, expiryMinutes);
+  invalidatePasswordResetOtp(user.email);
+  setPasswordResetOtp({
+    email: user.email,
+    userId: user.id,
+    otpCode,
+    ttlMs: getResetOtpTtlMs(),
+  });
 
   try {
-    await sendPasswordResetOtpEmail(user.email, otpCode);
+    await sendPasswordResetOtpEmail(user.email, otpCode, expiryMinutes);
   } catch (err) {
-    await deleteResetOtpsByUser(user.id);
+    invalidatePasswordResetOtp(user.email);
     if (err.statusCode) {
       throw err;
     }
@@ -540,33 +634,21 @@ async function forgotPassword(payload) {
 }
 
 async function verifyOtp(payload) {
-  await cleanupExpiredResetOtps();
-
   const user = await findByEmail(payload.email);
   if (!user) {
     throw buildError(404, "Account not found");
   }
 
-  const otpRow = await findLatestActiveResetOtpByEmail(user.email);
-  if (!otpRow) {
+  const verified = verifyPasswordResetOtp({
+    email: user.email,
+    otpCode: payload.otp,
+    maxAttempts: getResetOtpMaxAttempts(),
+    verifiedTtlMs: getResetVerificationTtlMs(),
+  });
+  if (!verified.ok) {
     throw buildError(401, "Invalid or expired OTP");
   }
 
-  const maxAttempts = getResetOtpMaxAttempts();
-  if (otpRow.attempt_count >= maxAttempts) {
-    await deleteResetOtpById(otpRow.id);
-    throw buildError(401, "Invalid or expired OTP");
-  }
-
-  if (String(payload.otp || "").trim() !== otpRow.otp_code) {
-    const updated = await incrementResetOtpAttempt(otpRow.id);
-    if (updated && updated.attempt_count >= maxAttempts) {
-      await deleteResetOtpById(otpRow.id);
-    }
-    throw buildError(401, "Invalid or expired OTP");
-  }
-
-  await markResetOtpVerified(otpRow.id);
   await logActivity(user.id, "Password Reset OTP Verified", "Password reset OTP verified successfully");
 
   return {
@@ -582,26 +664,120 @@ async function resetPassword(payload) {
     throw buildError(400, "New password and confirm password do not match.");
   }
 
-  await cleanupExpiredResetOtps();
-
   const user = await findByEmail(payload.email);
   if (!user) {
     throw buildError(404, "Account not found");
   }
 
-  const verifiedOtp = await findLatestVerifiedResetOtpByEmail(user.email);
-  if (!verifiedOtp) {
+  if (!hasValidPasswordResetVerification(user.email)) {
     throw buildError(401, "OTP verification required");
   }
 
   const passwordHash = await bcrypt.hash(payload.new_password, 10);
   await updatePasswordHash(user.id, passwordHash);
-  await deleteResetOtpsByUser(user.id);
+  consumePasswordResetVerification(user.email);
+  await revokeAllRefreshTokensForUser(user.id);
   await logActivity(user.id, "Password Reset Successful", "Password was reset using OTP flow");
 
   return {
     message: "Password reset successful",
   };
+}
+
+async function refreshAccessToken(payload) {
+  const refreshToken = String(payload?.refresh_token || "").trim();
+  if (!refreshToken) {
+    throw buildError(401, "Refresh token is required");
+  }
+
+  let decoded;
+  try {
+    decoded = verifyRefreshToken(refreshToken);
+  } catch (err) {
+    if (err?.name === "TokenExpiredError") {
+      throw buildError(401, "Refresh token expired. Please login again.");
+    }
+    throw buildError(401, "Invalid refresh token");
+  }
+
+  if (String(decoded?.tokenType || "").toLowerCase() !== "refresh") {
+    throw buildError(401, "Invalid refresh token");
+  }
+
+  const tokenId = String(decoded?.tokenId || "").trim();
+  if (!tokenId) {
+    throw buildError(401, "Invalid refresh token");
+  }
+
+  const client = await pool.connect();
+  let transactionStarted = false;
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const storedToken = await findRefreshTokenByTokenId(tokenId, client);
+    if (!storedToken || storedToken.revoked_at) {
+      throw buildError(401, "Refresh token has been revoked. Please login again.");
+    }
+
+    if (new Date(storedToken.expires_at).getTime() <= Date.now()) {
+      throw buildError(401, "Refresh token expired. Please login again.");
+    }
+
+    const incomingHash = hashRefreshToken(refreshToken);
+    if (String(storedToken.token_hash || "") !== incomingHash) {
+      await revokeRefreshTokenByTokenId(tokenId, {}, client);
+      throw buildError(401, "Refresh token mismatch. Please login again.");
+    }
+
+    const user = await findBasicById(decoded.userId);
+    if (!user) {
+      await revokeRefreshTokenByTokenId(tokenId, {}, client);
+      throw buildError(404, "User not found");
+    }
+
+    const issued = await issueSessionTokens(user, {
+      rotateFromTokenId: tokenId,
+      db: client,
+    });
+
+    await deleteExpiredRefreshTokens(client);
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return {
+      message: "Access token refreshed",
+      token: issued.accessToken,
+      access_token: issued.accessToken,
+      refresh_token: issued.refreshToken,
+      refresh_expires_at: issued.refreshTokenExpiresAt.toISOString(),
+      user,
+    };
+  } catch (err) {
+    if (transactionStarted) {
+      await client.query("ROLLBACK");
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function logout(payload = {}) {
+  const refreshToken = String(payload.refresh_token || "").trim();
+  const userId = Number(payload.userId);
+
+  if (refreshToken) {
+    await revokeRefreshTokenByRawToken(refreshToken).catch(() => {});
+  } else if (Number.isInteger(userId) && userId > 0) {
+    await revokeAllRefreshTokensForUser(userId).catch(() => {});
+  }
+
+  if (Number.isInteger(userId) && userId > 0) {
+    await logActivity(userId, "Logout", "User logged out from dashboard");
+  }
+
+  return { success: true, message: "Logged out successfully" };
 }
 
 module.exports = {
@@ -617,4 +793,8 @@ module.exports = {
   adminSignup,
   forgotPassword,
   resetPassword,
+  refreshAccessToken,
+  logout,
+  getRefreshCookieConfig,
+  readRefreshTokenFromRequest,
 };

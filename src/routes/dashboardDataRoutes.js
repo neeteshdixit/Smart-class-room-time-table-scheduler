@@ -2,6 +2,7 @@ const express = require("express");
 const pool = require("../config/db");
 const { authRequired } = require("../middleware/auth");
 const { logActivity } = require("../utils/activity");
+const authService = require("../services/authService");
 
 const router = express.Router();
 const DEFAULT_SLOT_DURATION_MINUTES = 50;
@@ -326,14 +327,25 @@ async function listWithPagination({ page, limit, querySql, queryValues, countSql
 
 router.post("/logout", authRequired, async (req, res, next) => {
   try {
+    const refreshToken = authService.readRefreshTokenFromRequest(req);
+    const response = await authService.logout({
+      refresh_token: refreshToken,
+      userId: req.user?.userId,
+    });
+    const { cookieName, cookieOptions } = authService.getRefreshCookieConfig();
+    res.clearCookie(cookieName, {
+      httpOnly: cookieOptions.httpOnly,
+      secure: cookieOptions.secure,
+      sameSite: cookieOptions.sameSite,
+      path: cookieOptions.path,
+    });
+
     if (req.session && typeof req.session.destroy === "function") {
       await new Promise((resolve, reject) =>
         req.session.destroy((err) => (err ? reject(err) : resolve()))
       );
     }
-
-    await logActivity(req.user.userId, "Logout", "User logged out from dashboard");
-    return res.json({ success: true, message: "Logged out successfully" });
+    return res.json(response);
   } catch (err) {
     return next(err);
   }

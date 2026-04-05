@@ -35,7 +35,12 @@ if (otpForm) {
         }),
       });
 
-      setAuthToken(result.token);
+      const accessToken = result?.access_token || result?.token;
+      if (!accessToken) {
+        throw new Error("Login failed: access token missing.");
+      }
+      setAuthToken(accessToken);
+      sessionStorage.removeItem("login_token");
       showAlert("otpAlert", "OTP verified. Redirecting...", "success");
       setTimeout(() => {
         redirectByRole(result?.user?.role);

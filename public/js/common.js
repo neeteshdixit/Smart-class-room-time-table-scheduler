@@ -2,7 +2,9 @@ const DEFAULT_API_BASE = "/api";
 const API_BASE_STORAGE_KEY = "api_base_url";
 const AUTH_STORAGE_KEY = "auth_token";
 const LOGIN_PAGE_PATH = "/login";
+const REFRESH_TOKEN_ENDPOINT = "/auth/refresh-token";
 const AUTH_TOKEN_KEYS = [AUTH_STORAGE_KEY, "token", "jwt", "jwt_token", "access_token"];
+let refreshRequestPromise = null;
 
 function normalizeApiBase(value) {
   const base = String(value || "").trim();
@@ -90,6 +92,21 @@ function buildApiUrl(apiBase, endpoint) {
   return `${normalizeApiBase(apiBase)}${path}`;
 }
 
+function stripInternalRequestOptions(options = {}) {
+  const cleaned = { ...options };
+  delete cleaned._skipAuthRefresh;
+  delete cleaned._retryAfterRefresh;
+  return cleaned;
+}
+
+function applyDefaultFetchOptions(options = {}) {
+  const cleaned = stripInternalRequestOptions(options);
+  if (!cleaned.credentials) {
+    cleaned.credentials = "include";
+  }
+  return cleaned;
+}
+
 async function parseApiResponseBody(response) {
   const text = await response.text().catch(() => "");
   if (!text) return {};
@@ -146,6 +163,66 @@ function authHeaders(extra = {}) {
   };
 }
 
+function shouldSkipAuthRefresh(endpoint, options = {}) {
+  if (options._skipAuthRefresh) return true;
+  const normalizedEndpoint = String(endpoint || "").trim().toLowerCase();
+  if (!normalizedEndpoint) return false;
+  if (normalizedEndpoint.startsWith(REFRESH_TOKEN_ENDPOINT)) return true;
+  if (normalizedEndpoint.startsWith("/auth/login")) return true;
+  if (normalizedEndpoint.startsWith("/auth/verify-login-otp")) return true;
+  if (normalizedEndpoint.startsWith("/auth/resend-otp")) return true;
+  if (normalizedEndpoint.startsWith("/auth/forgot-password")) return true;
+  if (normalizedEndpoint.startsWith("/auth/verify-otp")) return true;
+  if (normalizedEndpoint.startsWith("/auth/reset-password")) return true;
+  return false;
+}
+
+async function requestAccessTokenRefresh() {
+  if (refreshRequestPromise) {
+    return refreshRequestPromise;
+  }
+
+  refreshRequestPromise = (async () => {
+    const candidates = getApiBaseCandidates();
+    let lastError = null;
+
+    for (let index = 0; index < candidates.length; index += 1) {
+      const base = candidates[index];
+      const requestUrl = buildApiUrl(base, REFRESH_TOKEN_ENDPOINT);
+
+      try {
+        const response = await fetch(requestUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+        });
+        const data = await parseApiResponseBody(response);
+
+        if (response.ok) {
+          const token = String(data?.access_token || data?.token || "").trim();
+          if (token) {
+            setAuthToken(token);
+          }
+          setActiveApiBase(base);
+          return data;
+        }
+
+        const error = new Error(getFallbackErrorMessage(response, data, requestUrl));
+        error.status = response.status;
+        lastError = error;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    throw lastError || new Error("Unable to refresh session");
+  })().finally(() => {
+    refreshRequestPromise = null;
+  });
+
+  return refreshRequestPromise;
+}
+
 async function apiRequest(endpoint, options = {}) {
   const candidates = getApiBaseCandidates();
   let lastError = null;
@@ -156,12 +233,28 @@ async function apiRequest(endpoint, options = {}) {
     const requestUrl = buildApiUrl(base, endpoint);
 
     try {
-      const response = await fetch(requestUrl, options);
+      const response = await fetch(requestUrl, applyDefaultFetchOptions(options));
       const data = await parseApiResponseBody(response);
 
       if (response.ok) {
         setActiveApiBase(base);
+        const responseToken = String(data?.access_token || "").trim();
+        if (responseToken) {
+          setAuthToken(responseToken);
+        }
         return data;
+      }
+
+      if (response.status === 401 && !shouldSkipAuthRefresh(endpoint, options) && !options._retryAfterRefresh) {
+        try {
+          await requestAccessTokenRefresh();
+          return apiRequest(endpoint, {
+            ...options,
+            _retryAfterRefresh: true,
+          });
+        } catch (refreshError) {
+          // Continue with standard error handling below.
+        }
       }
 
       // Try the next candidate when current base likely does not host API routes.
@@ -218,12 +311,11 @@ function requireAuth() {
 async function logout() {
   try {
     const token = getAuthToken();
-    if (token) {
-      await apiRequest("/logout", {
-        method: "POST",
-        headers: authHeaders(),
-      });
-    }
+    await apiRequest("/auth/logout", {
+      method: "POST",
+      headers: token ? authHeaders() : { "Content-Type": "application/json" },
+      _skipAuthRefresh: true,
+    });
   } catch (err) {
     // ignore logout API failures and continue client-side sign-out
   } finally {

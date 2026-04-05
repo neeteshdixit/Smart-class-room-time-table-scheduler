@@ -17,6 +17,10 @@ function authRequired(req, res, next) {
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
 
+    if (payload.tokenType && String(payload.tokenType).toLowerCase() !== "access") {
+      return res.status(401).json({ message: "Invalid access token" });
+    }
+
     if (payload.otpPending) {
       return res
         .status(401)
@@ -54,6 +58,9 @@ function optionalAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
+    if (payload.tokenType && String(payload.tokenType).toLowerCase() !== "access") {
+      return next();
+    }
     if (!payload.otpPending) {
       req.user = payload;
     }

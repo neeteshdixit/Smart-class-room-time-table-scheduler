@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS password_reset_otps (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS refresh_tokens (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES faculty_users(id) ON DELETE CASCADE,
+    token_id VARCHAR(64) UNIQUE NOT NULL,
+    token_hash TEXT UNIQUE NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    replaced_by_token_id VARCHAR(64),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS password_reset_tokens (
     id SERIAL PRIMARY KEY,
     faculty_user_id INTEGER NOT NULL REFERENCES faculty_users(id) ON DELETE CASCADE,
@@ -747,6 +758,9 @@ CREATE INDEX IF NOT EXISTS idx_otp_faculty_user_id ON otp_verifications(faculty_
 CREATE INDEX IF NOT EXISTS idx_password_reset_otps_user_id ON password_reset_otps(user_id);
 CREATE INDEX IF NOT EXISTS idx_password_reset_otps_email ON password_reset_otps(email);
 CREATE INDEX IF NOT EXISTS idx_password_reset_otps_expiry_time ON password_reset_otps(expiry_time);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token_id ON refresh_tokens(token_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON refresh_tokens(expires_at);
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_faculty_user_id ON password_reset_tokens(faculty_user_id);
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expiry_time ON password_reset_tokens(expiry_time);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_single_admin_user

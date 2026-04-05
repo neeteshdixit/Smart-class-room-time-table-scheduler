@@ -1,7 +1,10 @@
+const crypto = require("crypto");
+
 function generateOtp(length = 6) {
+  const otpLength = Number.isInteger(Number(length)) ? Math.max(1, Number(length)) : 6;
   let otp = "";
-  for (let i = 0; i < length; i += 1) {
-    otp += Math.floor(Math.random() * 10).toString();
+  for (let i = 0; i < otpLength; i += 1) {
+    otp += crypto.randomInt(0, 10).toString();
   }
   return otp;
 }
@@ -16,4 +19,3 @@ function maskMobileNumber(mobileNumber) {
 }
 
 module.exports = { generateOtp, maskMobileNumber };
-

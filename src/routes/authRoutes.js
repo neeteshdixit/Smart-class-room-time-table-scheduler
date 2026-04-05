@@ -84,6 +84,8 @@ router.post("/admin-signup", uploadProfilePhoto, signupValidator, authController
 router.post("/login", loginValidator, authController.login);
 router.post("/verify-login-otp", verifyLoginOtpValidator, authController.verifyLoginOtp);
 router.post("/resend-otp", resendOtpValidator, authController.resendOtp);
+router.post("/refresh-token", authController.refreshAccessToken);
+router.post("/logout", optionalAuth, authController.logout);
 router.post("/forgot-password", forgotPasswordValidator, authController.forgotPassword);
 router.post("/verify-otp", verifyResetOtpValidator, authController.verifyOtp);
 router.post("/reset-password", resetPasswordValidator, authController.resetPassword);

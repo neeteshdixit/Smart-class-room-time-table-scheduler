@@ -183,19 +183,21 @@ async function sendBulkEmail(recipients, buildMessage) {
   return summary;
 }
 
-async function sendPasswordResetOtpEmail(email, otpCode) {
+async function sendPasswordResetOtpEmail(email, otpCode, expiryMinutes = 2) {
+  const safeExpiry = Number.isInteger(Number(expiryMinutes)) && Number(expiryMinutes) > 0 ? Number(expiryMinutes) : 2;
   await sendEmail({
     to: email,
     subject: "Password Reset OTP",
-    text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
+    text: `Your OTP for password reset is: ${otpCode}\nThis OTP is valid for ${safeExpiry} minute${safeExpiry === 1 ? "" : "s"}.`,
   });
 }
 
-async function sendLoginOtpEmail(email, otpCode) {
+async function sendLoginOtpEmail(email, otpCode, expiryMinutes = 2) {
+  const safeExpiry = Number.isInteger(Number(expiryMinutes)) && Number(expiryMinutes) > 0 ? Number(expiryMinutes) : 2;
   await sendEmail({
     to: email,
     subject: "Login OTP",
-    text: `Your login OTP is: ${otpCode}\nThis OTP is valid for 5 minutes.`,
+    text: `Your login OTP is: ${otpCode}\nThis OTP is valid for ${safeExpiry} minute${safeExpiry === 1 ? "" : "s"}.`,
   });
 }
 

@@ -7,6 +7,21 @@ function handleError(err, next, res) {
   return next(err);
 }
 
+function setRefreshCookie(res, refreshToken) {
+  const { cookieName, cookieOptions } = authService.getRefreshCookieConfig();
+  res.cookie(cookieName, refreshToken, cookieOptions);
+}
+
+function clearRefreshCookie(res) {
+  const { cookieName, cookieOptions } = authService.getRefreshCookieConfig();
+  res.clearCookie(cookieName, {
+    httpOnly: cookieOptions.httpOnly,
+    secure: cookieOptions.secure,
+    sameSite: cookieOptions.sameSite,
+    path: cookieOptions.path,
+  });
+}
+
 async function getSignupMeta(req, res, next) {
   try {
     const meta = await authService.getSignupMeta(req.user || null);
@@ -75,6 +90,10 @@ async function login(req, res, next) {
 async function verifyLoginOtp(req, res, next) {
   try {
     const response = await authService.verifyLoginOtp(req.body);
+    if (response?.refresh_token) {
+      setRefreshCookie(res, response.refresh_token);
+      delete response.refresh_token;
+    }
     return res.json(response);
   } catch (err) {
     return handleError(err, next, res);
@@ -117,6 +136,36 @@ async function resetPassword(req, res, next) {
   }
 }
 
+async function refreshAccessToken(req, res, next) {
+  try {
+    const refreshToken = authService.readRefreshTokenFromRequest(req);
+    const response = await authService.refreshAccessToken({ refresh_token: refreshToken });
+    if (response?.refresh_token) {
+      setRefreshCookie(res, response.refresh_token);
+      delete response.refresh_token;
+    }
+    return res.json(response);
+  } catch (err) {
+    clearRefreshCookie(res);
+    return handleError(err, next, res);
+  }
+}
+
+async function logout(req, res, next) {
+  try {
+    const refreshToken = authService.readRefreshTokenFromRequest(req);
+    const response = await authService.logout({
+      refresh_token: refreshToken,
+      userId: req.user?.userId,
+    });
+    clearRefreshCookie(res);
+    return res.json(response);
+  } catch (err) {
+    clearRefreshCookie(res);
+    return handleError(err, next, res);
+  }
+}
+
 module.exports = {
   getSignupMeta,
   checkAdmin,
@@ -130,4 +179,6 @@ module.exports = {
   resendOtp,
   forgotPassword,
   resetPassword,
+  refreshAccessToken,
+  logout,
 };

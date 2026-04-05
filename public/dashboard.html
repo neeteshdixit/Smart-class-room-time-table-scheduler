@@ -294,9 +294,34 @@
       </div>
     </div>
 
+    <div class="chatbot-shell" id="chatbotShell">
+      <button id="chatbotToggleBtn" type="button" class="btn btn-warning chatbot-toggle-btn" aria-expanded="false" aria-controls="chatbotPanel">
+        Ask Assistant
+      </button>
+      <section id="chatbotPanel" class="chatbot-panel d-none" aria-live="polite">
+        <div class="chatbot-header">
+          <h6 class="mb-0">Timetable Assistant</h6>
+          <button id="chatbotCloseBtn" type="button" class="btn-close btn-close-white" aria-label="Close"></button>
+        </div>
+        <div id="chatbotMessages" class="chatbot-messages"></div>
+        <form id="chatbotForm" class="chatbot-form">
+          <input
+            id="chatbotInput"
+            type="text"
+            class="form-control form-control-sm"
+            maxlength="2000"
+            placeholder="Ask: how to generate timetable?"
+            required
+          />
+          <button id="chatbotSendBtn" type="submit" class="btn btn-warning btn-sm">Send</button>
+        </form>
+      </section>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/runtime-config.js"></script>
     <script src="/js/common.js"></script>
     <script src="/js/dashboard.js"></script>
+    <script src="/js/chatbot.js"></script>
   </body>
 </html>
