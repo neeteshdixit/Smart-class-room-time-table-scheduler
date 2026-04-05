@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS faculty_users (
     joining_date DATE NOT NULL,
     profile_photo_url TEXT,
     role VARCHAR(60) NOT NULL DEFAULT 'Faculty',
+    is_mentor BOOLEAN NOT NULL DEFAULT FALSE,
     employee_type VARCHAR(40) DEFAULT 'Permanent',
     office_location VARCHAR(80),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -39,6 +40,16 @@ BEGIN
     ALTER TABLE faculty_users
     ADD CONSTRAINT chk_faculty_users_role
     CHECK (LOWER(role) IN ('faculty', 'admin', 'user'));
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'faculty_users'
+          AND column_name = 'is_mentor'
+    ) THEN
+        ALTER TABLE faculty_users
+        ADD COLUMN is_mentor BOOLEAN NOT NULL DEFAULT FALSE;
+    END IF;
 END $$;
 
 CREATE TABLE IF NOT EXISTS otp_verifications (
@@ -113,6 +124,14 @@ CREATE TABLE IF NOT EXISTS sections (
     student_strength INTEGER NOT NULL DEFAULT 60 CHECK (student_strength > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (section_name, semester_id)
+);
+
+CREATE TABLE IF NOT EXISTS section_mentors (
+    id SERIAL PRIMARY KEY,
+    faculty_id INTEGER NOT NULL REFERENCES faculty_users(id) ON DELETE CASCADE,
+    section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (faculty_id, section_id)
 );
 
 CREATE TABLE IF NOT EXISTS faculty (
@@ -765,3 +784,5 @@ CREATE INDEX IF NOT EXISTS idx_timetable_entries_faculty_id ON timetable_entries
 CREATE INDEX IF NOT EXISTS idx_time_slots_department_id ON time_slots(department_id);
 CREATE INDEX IF NOT EXISTS idx_timetable_history_created_at ON timetable_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_recent_activity_created_at ON recent_activity(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_section_mentors_faculty_id ON section_mentors(faculty_id);
+CREATE INDEX IF NOT EXISTS idx_section_mentors_section_id ON section_mentors(section_id);

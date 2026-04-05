@@ -13,10 +13,22 @@ const studentShareBtn = document.getElementById("studentShareBtn");
 const studentGridHeader = document.getElementById("studentGridHeader");
 const studentGridContainer = document.getElementById("studentGridContainer");
 const studentGridFooter = document.getElementById("studentGridFooter");
+const mentorTimetableCard = document.getElementById("mentorTimetableCard");
+const mentorSectionSelect = document.getElementById("mentorSectionSelect");
+const mentorTimetableSelect = document.getElementById("mentorTimetableSelect");
+const mentorGridHeader = document.getElementById("mentorGridHeader");
+const mentorGridContainer = document.getElementById("mentorGridContainer");
+const mentorGridFooter = document.getElementById("mentorGridFooter");
 
 const state = {
   faculty: null,
   student: null,
+  mentor: {
+    sections: [],
+    selectedSectionId: null,
+    selectedTimetableId: null,
+    timetablePayload: null,
+  },
 };
 
 function decodeJwtPayload(token) {
@@ -125,6 +137,16 @@ function buildTimetableOptions(timetables) {
         )} | ${escapeHtml(row.academic_year)}</option>`
     )
     .join("");
+}
+
+function buildMentorSectionOptionLabel(section) {
+  const parts = [
+    section?.section_name,
+    section?.branch_name,
+    section?.semester_number ? `Sem ${section.semester_number}` : "",
+    section?.academic_year,
+  ].filter(Boolean);
+  return parts.join(" | ");
 }
 
 function buildCell(entry, options = {}, colspan = 1) {
@@ -308,6 +330,24 @@ function renderStudentTimetable(data) {
   });
 }
 
+function renderMentorTimetable(data) {
+  const selectedSectionId = Number(data?.selected_section_id || 0);
+  const entries = (Array.isArray(data?.entries) ? data.entries : []).filter(
+    (entry) => !selectedSectionId || Number(entry.section_id) === selectedSectionId
+  );
+
+  renderTimetableGrid({
+    header: mentorGridHeader,
+    container: mentorGridContainer,
+    footer: mentorGridFooter,
+    timetable: data?.timetable || null,
+    entries,
+    timeSlots: Array.isArray(data?.time_slots) ? data.time_slots : [],
+    placeholderMessage: "No mentor timetable available for this section.",
+    detailFormatter: (entry) => entry.faculty_name || "-",
+  });
+}
+
 function renderFacultySelector(data) {
   if (!facultyTimetableSelect) return;
   const timetables = Array.isArray(data?.timetables) ? data.timetables : [];
@@ -355,6 +395,104 @@ function renderStudentControls(data) {
   if (studentShareBtn) {
     studentShareBtn.disabled = !data?.selected_timetable_id;
   }
+}
+
+function renderMentorSectionControls(sections) {
+  if (!mentorSectionSelect) return;
+  const sectionRows = Array.isArray(sections) ? sections : [];
+  if (!sectionRows.length) {
+    mentorSectionSelect.disabled = true;
+    mentorSectionSelect.innerHTML = '<option value="">No section</option>';
+    return;
+  }
+
+  mentorSectionSelect.disabled = false;
+  mentorSectionSelect.innerHTML = sectionRows
+    .map(
+      (section) =>
+        `<option value="${escapeHtml(section.id)}">${escapeHtml(
+          buildMentorSectionOptionLabel(section)
+        )}</option>`
+    )
+    .join("");
+
+  const selected = Number(state.mentor.selectedSectionId || sectionRows[0].id);
+  mentorSectionSelect.value = String(selected);
+}
+
+function renderMentorTimetableControls(payload) {
+  if (!mentorTimetableSelect) return;
+  const timetables = Array.isArray(payload?.timetables) ? payload.timetables : [];
+  if (!timetables.length) {
+    mentorTimetableSelect.disabled = true;
+    mentorTimetableSelect.innerHTML = '<option value="">No timetable</option>';
+    return;
+  }
+
+  mentorTimetableSelect.disabled = false;
+  mentorTimetableSelect.innerHTML = buildTimetableOptions(timetables);
+  mentorTimetableSelect.value = String(payload.selected_timetable_id || timetables[0].id);
+}
+
+async function loadMentorSections() {
+  const result = await apiRequest("/mentor/sections", {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  const sections = Array.isArray(result?.sections) ? result.sections : [];
+  state.mentor.sections = sections;
+
+  if (!mentorTimetableCard) return sections;
+
+  if (!sections.length) {
+    mentorTimetableCard.classList.add("d-none");
+    renderPlaceholder({
+      header: mentorGridHeader,
+      container: mentorGridContainer,
+      footer: mentorGridFooter,
+      message: "Mentor access is not enabled for this account.",
+    });
+    renderMentorSectionControls([]);
+    renderMentorTimetableControls({ timetables: [] });
+    return sections;
+  }
+
+  mentorTimetableCard.classList.remove("d-none");
+  state.mentor.selectedSectionId = Number(state.mentor.selectedSectionId || sections[0].id);
+  renderMentorSectionControls(sections);
+  return sections;
+}
+
+async function loadMentorTimetable(sectionId, timetableId = null) {
+  const safeSectionId = Number(sectionId);
+  if (!Number.isInteger(safeSectionId) || safeSectionId <= 0) {
+    renderPlaceholder({
+      header: mentorGridHeader,
+      container: mentorGridContainer,
+      footer: mentorGridFooter,
+      message: "Select a mentor section to view timetable.",
+    });
+    return null;
+  }
+
+  const params = new URLSearchParams();
+  if (timetableId) {
+    params.set("timetable_id", String(timetableId));
+  }
+  const query = params.toString() ? `?${params.toString()}` : "";
+
+  const payload = await apiRequest(`/mentor/timetable/${safeSectionId}${query}`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  state.mentor.selectedSectionId = safeSectionId;
+  state.mentor.selectedTimetableId = Number(payload?.selected_timetable_id || 0) || null;
+  state.mentor.timetablePayload = payload;
+  renderMentorTimetableControls(payload);
+  renderMentorTimetable(payload);
+  return payload;
 }
 
 async function loadFacultyTimetable(timetableId = null) {
@@ -472,6 +610,34 @@ if (studentSectionSelect) {
   });
 }
 
+if (mentorSectionSelect) {
+  mentorSectionSelect.addEventListener("change", async () => {
+    const selectedSectionId = Number(mentorSectionSelect.value);
+    if (!Number.isInteger(selectedSectionId) || selectedSectionId <= 0) return;
+
+    try {
+      await loadMentorTimetable(selectedSectionId);
+    } catch (err) {
+      showAlert(alertId, err.message || "Failed to load mentor timetable.");
+    }
+  });
+}
+
+if (mentorTimetableSelect) {
+  mentorTimetableSelect.addEventListener("change", async () => {
+    const selectedSectionId = Number(state.mentor.selectedSectionId || 0);
+    const selectedTimetableId = Number(mentorTimetableSelect.value);
+    if (!Number.isInteger(selectedSectionId) || selectedSectionId <= 0) return;
+    if (!Number.isInteger(selectedTimetableId) || selectedTimetableId <= 0) return;
+
+    try {
+      await loadMentorTimetable(selectedSectionId, selectedTimetableId);
+    } catch (err) {
+      showAlert(alertId, err.message || "Failed to load mentor timetable.");
+    }
+  });
+}
+
 if (studentDownloadBtn) {
   studentDownloadBtn.addEventListener("click", () => {
     const timetableId = Number(state.student?.selected_timetable_id || 0);
@@ -507,6 +673,12 @@ async function init() {
     const facultyResponse = await loadFacultyTimetable();
     const selectedTimetableId = Number(facultyResponse?.selected_timetable_id || 0) || null;
     await loadStudentTimetable(selectedTimetableId);
+
+    const mentorSections = await loadMentorSections();
+    if (mentorSections.length > 0) {
+      const initialSectionId = Number(mentorSections[0].id);
+      await loadMentorTimetable(initialSectionId);
+    }
   } catch (err) {
     const message = String(err?.message || "").trim() || "Failed to load timetable.";
     showAlert(alertId, message);
@@ -523,6 +695,12 @@ async function init() {
         header: studentGridHeader,
         container: studentGridContainer,
         footer: studentGridFooter,
+        message,
+      });
+      renderPlaceholder({
+        header: mentorGridHeader,
+        container: mentorGridContainer,
+        footer: mentorGridFooter,
         message,
       });
     }

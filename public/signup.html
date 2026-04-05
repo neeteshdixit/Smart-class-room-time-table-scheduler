@@ -124,6 +124,14 @@
                     <small id="adminRoleHelp" class="text-secondary d-block mt-1"></small>
                   </div>
                   <div class="col-md-4">
+                    <label class="form-label">Role Type *</label>
+                    <select class="form-select" name="role_type" id="roleTypeSelect" required>
+                      <option value="FACULTY_ONLY">Only Faculty</option>
+                      <option value="FACULTY_MENTOR">Faculty + Mentor</option>
+                    </select>
+                    <small class="text-secondary d-block mt-1">Mentor role enables section-wise timetable access.</small>
+                  </div>
+                  <div class="col-md-4">
                     <label class="form-label" for="subjectTagInput">Subjects Taught *</label>
                     <div class="tag-input-shell" id="subjectTags">
                       <div class="tag-items" id="subjectTagsList"></div>
@@ -140,6 +148,13 @@
                     <datalist id="subjectSuggestions"></datalist>
                     <small class="text-secondary d-block mt-1">Use Enter or comma to add multiple subjects.</small>
                     <small id="subjectCountHelp" class="text-secondary d-block mt-1">Selected subjects: 0</small>
+                  </div>
+                  <div class="col-md-8 d-none" id="mentorSectionWrapper">
+                    <label class="form-label" for="mentorSectionSelect">Mentor Sections *</label>
+                    <select class="form-select" id="mentorSectionSelect" multiple size="6"></select>
+                    <small class="text-secondary d-block mt-1">
+                      Hold Ctrl (or Command on Mac) to select multiple sections.
+                    </small>
                   </div>
                   <div class="col-md-4">
                     <label class="form-label">Employee Type</label>

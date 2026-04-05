@@ -31,10 +31,10 @@ async function createFacultyUser(payload, db) {
   const result = await conn.query(
     `INSERT INTO faculty_users
     (faculty_id, full_name, department, designation, email, mobile_number, password_hash, gender, dob, qualification,
-     experience_years, address, joining_date, profile_photo_url, role, employee_type, office_location)
+     experience_years, address, joining_date, profile_photo_url, role, is_mentor, employee_type, office_location)
     VALUES
-    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-    RETURNING id, faculty_id, full_name, email, mobile_number, role, created_at`,
+    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+    RETURNING id, faculty_id, full_name, email, mobile_number, role, is_mentor, created_at`,
     [
       payload.faculty_id,
       payload.full_name,
@@ -51,6 +51,7 @@ async function createFacultyUser(payload, db) {
       payload.joining_date,
       payload.profile_photo_url || null,
       payload.role,
+      Boolean(payload.is_mentor),
       payload.employee_type || "Permanent",
       payload.office_location || null,
     ]
@@ -70,7 +71,7 @@ async function findByIdentifier(identifier) {
 
 async function findBasicById(id) {
   const result = await pool.query(
-    `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, role
+    `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, role, is_mentor
      FROM faculty_users
      WHERE id = $1`,
     [id]

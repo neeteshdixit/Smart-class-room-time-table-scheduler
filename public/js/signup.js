@@ -1,9 +1,12 @@
 const signupForm = document.getElementById("signupForm");
 const signupBtn = document.getElementById("signupBtn");
 const roleSelect = document.getElementById("roleSelect");
+const roleTypeSelect = document.getElementById("roleTypeSelect");
 const adminRoleOption = document.getElementById("adminRoleOption");
 const adminRoleHelp = document.getElementById("adminRoleHelp");
 const subjectCountHelp = document.getElementById("subjectCountHelp");
+const mentorSectionWrapper = document.getElementById("mentorSectionWrapper");
+const mentorSectionSelect = document.getElementById("mentorSectionSelect");
 
 const departmentTagInput = document.getElementById("departmentTagInput");
 const departmentTagsList = document.getElementById("departmentTagsList");
@@ -39,6 +42,49 @@ function uniqueNames(items, keyField) {
     }
   });
   return [...values.values()];
+}
+
+function buildMentorSectionLabel(section) {
+  const parts = [
+    section?.section_name,
+    section?.branch_name,
+    section?.semester_number ? `Sem ${section.semester_number}` : "",
+    section?.academic_year,
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
+function getSelectedMentorSectionIds() {
+  if (!mentorSectionSelect) return [];
+  return [...mentorSectionSelect.selectedOptions]
+    .map((option) => Number(option.value))
+    .filter((value) => Number.isInteger(value) && value > 0);
+}
+
+function syncMentorSectionVisibility() {
+  if (!mentorSectionWrapper || !roleSelect || !roleTypeSelect) return;
+
+  const isFacultyRole = roleSelect.value === "FACULTY";
+  const isMentorType = roleTypeSelect.value === "FACULTY_MENTOR";
+  const shouldShow = isFacultyRole && isMentorType;
+
+  mentorSectionWrapper.classList.toggle("d-none", !shouldShow);
+  if (!shouldShow && mentorSectionSelect) {
+    [...mentorSectionSelect.options].forEach((option) => {
+      option.selected = false;
+    });
+  }
+}
+
+function syncRoleTypeState() {
+  if (!roleSelect || !roleTypeSelect) return;
+
+  const isFacultyRole = roleSelect.value === "FACULTY";
+  roleTypeSelect.disabled = !isFacultyRole;
+  if (!isFacultyRole) {
+    roleTypeSelect.value = "FACULTY_ONLY";
+  }
+  syncMentorSectionVisibility();
 }
 
 function updateSubjectCount(count) {
@@ -192,6 +238,8 @@ function applyAdminAvailability(meta) {
       ? "Admin account already exists. Contact administrator."
       : "No admin account exists yet. You can create the first admin account.";
   }
+
+  syncRoleTypeState();
 }
 
 function buildAuthHeader() {
@@ -206,6 +254,16 @@ async function loadSignupOptions() {
     const data = await apiRequest("/auth/signup-options");
     departmentTagManager.setSuggestions(uniqueNames(data.departments, "department_name"));
     subjectTagManager.setSuggestions(uniqueNames(data.subjects, "subject_name"));
+
+    if (mentorSectionSelect) {
+      const options = Array.isArray(data.sections) ? data.sections : [];
+      mentorSectionSelect.innerHTML = options
+        .map(
+          (section) =>
+            `<option value="${section.id}">${buildMentorSectionLabel(section)}</option>`
+        )
+        .join("");
+    }
   } catch (err) {
     showAlert("signupAlert", "Unable to load departments/subjects. Please contact admin.");
   }
@@ -230,12 +288,27 @@ if (signupForm) {
   updateSubjectCount(0);
   loadSignupMeta();
   loadSignupOptions();
+  syncRoleTypeState();
+
+  if (roleSelect) {
+    roleSelect.addEventListener("change", () => {
+      syncRoleTypeState();
+    });
+  }
+
+  if (roleTypeSelect) {
+    roleTypeSelect.addEventListener("change", () => {
+      syncMentorSectionVisibility();
+    });
+  }
 
   signupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     hideAlert("signupAlert");
 
     const roleValue = roleSelect ? roleSelect.value : "FACULTY";
+    const roleTypeValue = roleTypeSelect ? roleTypeSelect.value : "FACULTY_ONLY";
+    const isMentorType = roleValue === "FACULTY" && roleTypeValue === "FACULTY_MENTOR";
     departmentTagManager?.flushInput();
     subjectTagManager?.flushInput();
 
@@ -249,6 +322,12 @@ if (signupForm) {
 
     if (roleValue === "FACULTY" && subjectNames.length === 0) {
       showAlert("signupAlert", "Please add at least one subject.");
+      return;
+    }
+
+    const mentorSectionIds = getSelectedMentorSectionIds();
+    if (isMentorType && mentorSectionIds.length === 0) {
+      showAlert("signupAlert", "Please select at least one mentor section.");
       return;
     }
 
@@ -272,8 +351,13 @@ if (signupForm) {
     const formData = new FormData(signupForm);
     formData.set("department_names", JSON.stringify(departmentNames));
     formData.set("subject_names", JSON.stringify(subjectNames));
+    formData.set("role_type", isMentorType ? "FACULTY_MENTOR" : "FACULTY_ONLY");
+    if (isMentorType) {
+      formData.set("mentor_section_ids", JSON.stringify(mentorSectionIds));
+    }
     if (roleValue === "ADMIN") {
       formData.set("role", "ADMIN");
+      formData.set("role_type", "FACULTY_ONLY");
     }
 
     signupBtn.disabled = true;
@@ -291,6 +375,7 @@ if (signupForm) {
       signupForm.reset();
       departmentTagManager?.clear();
       subjectTagManager?.clear();
+      syncRoleTypeState();
       await loadSignupMeta();
       await loadSignupOptions();
     } catch (err) {

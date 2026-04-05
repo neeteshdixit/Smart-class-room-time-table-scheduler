@@ -77,6 +77,26 @@
           <div id="studentGridFooter" class="d-flex justify-content-between mt-2 small text-secondary"></div>
         </div>
       </div>
+
+      <div class="card section-card mt-4 d-none" id="mentorTimetableCard">
+        <div class="card-body">
+          <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+            <div>
+              <h5 class="mb-1">Mentor Timetable</h5>
+              <p class="text-secondary small mb-0">Section timetable access is available only for your mentor-assigned sections.</p>
+            </div>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+              <label for="mentorSectionSelect" class="form-label mb-0">Section</label>
+              <select id="mentorSectionSelect" class="form-select form-select-sm"></select>
+              <label for="mentorTimetableSelect" class="form-label mb-0">Version</label>
+              <select id="mentorTimetableSelect" class="form-select form-select-sm"></select>
+            </div>
+          </div>
+          <div id="mentorGridHeader" class="text-center mb-3"></div>
+          <div id="mentorGridContainer" class="table-responsive"></div>
+          <div id="mentorGridFooter" class="d-flex justify-content-between mt-2 small text-secondary"></div>
+        </div>
+      </div>
     </main>
 
     <script src="/runtime-config.js"></script>

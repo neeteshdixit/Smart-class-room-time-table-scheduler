@@ -26,12 +26,15 @@ const {
 const {
   listDepartments,
   listSubjects,
+  listSections,
   getDepartmentsByIds,
   getSubjectsByIds,
+  getSectionsByIds,
   findOrCreateDepartmentByName,
   findOrCreateSubjectByName,
 } = require("../models/academicLookupModel");
 const { addFacultyDepartments, addFacultyUserSubjects } = require("../models/facultyMappingModel");
+const { addSectionMentorMappings } = require("../models/mentorMappingModel");
 const { generateOtp } = require("../utils/otp");
 const { sendLoginOtpEmail, sendPasswordResetOtpEmail } = require("../utils/mailer");
 const { logActivity } = require("../utils/activity");
@@ -39,6 +42,8 @@ const { logActivity } = require("../utils/activity");
 const ROLE_FACULTY = "FACULTY";
 const ROLE_ADMIN = "ADMIN";
 const ROLE_USER = "USER";
+const ROLE_TYPE_FACULTY_ONLY = "FACULTY_ONLY";
+const ROLE_TYPE_FACULTY_MENTOR = "FACULTY_MENTOR";
 const ADMIN_EXISTS_MESSAGE = "Admin account already exists. Contact administrator.";
 
 function buildError(statusCode, message) {
@@ -65,6 +70,24 @@ function normalizeRole(inputRole) {
   if (value === "admin") return ROLE_ADMIN;
   if (value === "user") return ROLE_USER;
   return ROLE_FACULTY;
+}
+
+function normalizeRoleType(inputRoleType, accountRole) {
+  const normalizedRole = normalizeRole(accountRole);
+  if (normalizedRole !== ROLE_FACULTY) {
+    return ROLE_TYPE_FACULTY_ONLY;
+  }
+
+  const value = String(inputRoleType || ROLE_TYPE_FACULTY_ONLY)
+    .trim()
+    .toLowerCase();
+  const token = value.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+  if (token === "faculty_mentor" || token === "faculty_plus_mentor" || token === "mentor") {
+    return ROLE_TYPE_FACULTY_MENTOR;
+  }
+
+  return ROLE_TYPE_FACULTY_ONLY;
 }
 
 function parseIdArray(value) {
@@ -152,8 +175,8 @@ async function checkAdminAvailability() {
 }
 
 async function getSignupOptions() {
-  const [departments, subjects] = await Promise.all([listDepartments(), listSubjects()]);
-  return { departments, subjects };
+  const [departments, subjects, sections] = await Promise.all([listDepartments(), listSubjects(), listSections()]);
+  return { departments, subjects, sections };
 }
 
 async function getDepartments() {
@@ -167,10 +190,13 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
 
   const allowAdminRole = options.allowAdminRole !== false;
   const role = normalizeRole(payload.role);
+  const roleType = normalizeRoleType(payload.role_type, role);
+  const isMentor = role === ROLE_FACULTY && roleType === ROLE_TYPE_FACULTY_MENTOR;
   const departmentIds = parseIdArray(payload.department_ids);
   const departmentNames = parseNameArray(payload.department_names);
   const subjectIds = parseIdArray(payload.subject_ids);
   const subjectNames = parseNameArray(payload.subject_names);
+  const mentorSectionIds = isMentor ? parseIdArray(payload.mentor_section_ids) : [];
 
   if (role === ROLE_ADMIN && !allowAdminRole) {
     throw buildError(403, "Use admin signup endpoint to create an admin account.");
@@ -182,6 +208,10 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
 
   if (role === ROLE_FACULTY && subjectIds.length === 0 && subjectNames.length === 0) {
     throw buildError(400, "At least one subject is required for faculty registration.");
+  }
+
+  if (isMentor && mentorSectionIds.length === 0) {
+    throw buildError(400, "Select at least one section for Faculty + Mentor registration.");
   }
 
   const client = await pool.connect();
@@ -211,9 +241,10 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
       }
     }
 
-    const [departmentsById, subjectsById] = await Promise.all([
+    const [departmentsById, subjectsById, mentorSectionsById] = await Promise.all([
       getDepartmentsByIds(departmentIds, client),
       getSubjectsByIds(subjectIds, client),
+      getSectionsByIds(mentorSectionIds, client),
     ]);
 
     if (departmentIds.length > 0 && departmentsById.length !== departmentIds.length) {
@@ -222,6 +253,10 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
 
     if (subjectIds.length > 0 && subjectsById.length !== subjectIds.length) {
       throw buildError(400, "One or more selected subjects are invalid.");
+    }
+
+    if (isMentor && mentorSectionIds.length > 0 && mentorSectionsById.length !== mentorSectionIds.length) {
+      throw buildError(400, "One or more selected mentor sections are invalid.");
     }
 
     const departmentMap = new Map(departmentsById.map((department) => [department.id, department]));
@@ -247,6 +282,11 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
     }
     const resolvedSubjects = [...subjectMap.values()];
     const resolvedSubjectIds = resolvedSubjects.map((subject) => subject.id);
+    const resolvedMentorSectionIds = isMentor
+      ? mentorSectionsById
+          .map((section) => Number(section.id))
+          .filter((sectionId) => Number.isInteger(sectionId) && sectionId > 0)
+      : [];
 
     if (role === ROLE_FACULTY && resolvedDepartmentIds.length === 0) {
       throw buildError(400, "At least one department is required for faculty registration.");
@@ -268,15 +308,21 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
         profile_photo_url: photoPath,
         password_hash: passwordHash,
         role: role.charAt(0) + role.slice(1).toLowerCase(),
+        is_mentor: isMentor,
       },
       client
     );
 
     await addFacultyDepartments(user.id, resolvedDepartmentIds, client);
     await addFacultyUserSubjects(user.id, resolvedSubjectIds, client);
+    await addSectionMentorMappings(user.id, resolvedMentorSectionIds, client);
 
     await client.query("COMMIT");
-    await logActivity(user.id, "User Signup", `Registered faculty_id=${payload.faculty_id}, role=${role}`);
+    await logActivity(
+      user.id,
+      "User Signup",
+      `Registered faculty_id=${payload.faculty_id}, role=${role}, role_type=${roleType}`
+    );
 
     return {
       message: "Signup successful",
@@ -287,6 +333,9 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
         subject_ids: resolvedSubjectIds,
         department_names: resolvedDepartments.map((department) => department.department_name),
         subject_names: resolvedSubjects.map((subject) => subject.subject_name),
+        role_type: roleType,
+        mentor_section_ids: resolvedMentorSectionIds,
+        mentor_section_names: mentorSectionsById.map((section) => section.section_name),
       },
     };
   } catch (err) {
@@ -400,6 +449,7 @@ async function verifyLoginOtp(payload) {
       facultyId: user.faculty_id,
       role: user.role,
       fullName: user.full_name,
+      isMentor: Boolean(user.is_mentor),
     },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || "30m" }

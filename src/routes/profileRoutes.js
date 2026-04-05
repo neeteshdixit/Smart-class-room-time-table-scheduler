@@ -20,7 +20,7 @@ router.get("/", authRequired, async (req, res, next) => {
     const result = await pool.query(
       `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, gender, dob,
               qualification, experience_years, address, joining_date, profile_photo_url, role,
-              employee_type, office_location, created_at, last_login
+              is_mentor, employee_type, office_location, created_at, last_login
        FROM faculty_users
        WHERE id = $1`,
       [req.user.userId]
@@ -112,7 +112,7 @@ router.put(
         WHERE id = $${values.length}
         RETURNING id, faculty_id, full_name, department, designation, email, mobile_number, gender, dob,
                   qualification, experience_years, address, joining_date, profile_photo_url, role,
-                  employee_type, office_location, created_at, last_login
+                  is_mentor, employee_type, office_location, created_at, last_login
       `;
 
       const result = await pool.query(updateQuery, values);

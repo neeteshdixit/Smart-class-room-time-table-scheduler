@@ -56,6 +56,22 @@ async function listSubjects(db) {
   return result.rows;
 }
 
+async function listSections(db) {
+  const conn = getDb(db);
+  const result = await conn.query(
+    `SELECT s.id, s.section_name, s.semester_id,
+            sem.semester_number, sem.academic_year,
+            b.branch_name,
+            d.department_name
+     FROM sections s
+     JOIN semesters sem ON sem.id = s.semester_id
+     JOIN branches b ON b.id = sem.branch_id
+     JOIN departments d ON d.id = b.department_id
+     ORDER BY d.department_name, b.branch_name, sem.semester_number, s.section_name`
+  );
+  return result.rows;
+}
+
 async function getDepartmentsByIds(ids, db) {
   const conn = getDb(db);
   if (!ids.length) return [];
@@ -75,6 +91,24 @@ async function getSubjectsByIds(ids, db) {
     `SELECT id, subject_name
      FROM subjects
      WHERE id = ANY($1::int[])`,
+    [ids]
+  );
+  return result.rows;
+}
+
+async function getSectionsByIds(ids, db) {
+  const conn = getDb(db);
+  if (!ids.length) return [];
+  const result = await conn.query(
+    `SELECT s.id, s.section_name, s.semester_id,
+            sem.semester_number, sem.academic_year,
+            b.branch_name,
+            d.department_name
+     FROM sections s
+     JOIN semesters sem ON sem.id = s.semester_id
+     JOIN branches b ON b.id = sem.branch_id
+     JOIN departments d ON d.id = b.department_id
+     WHERE s.id = ANY($1::int[])`,
     [ids]
   );
   return result.rows;
@@ -286,8 +320,10 @@ async function findOrCreateSubjectByName(subjectName, departmentId, db) {
 module.exports = {
   listDepartments,
   listSubjects,
+  listSections,
   getDepartmentsByIds,
   getSubjectsByIds,
+  getSectionsByIds,
   findOrCreateDepartmentByName,
   findOrCreateSubjectByName,
 };
