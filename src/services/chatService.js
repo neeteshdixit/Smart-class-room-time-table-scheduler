@@ -7,27 +7,40 @@ function buildError(statusCode, message) {
 }
 
 const DEVANAGARI_REGEX = /[\u0900-\u097F]/;
-const HINGLISH_HINT_WORDS = [
+const LATIN_WORD_REGEX = /[a-zA-Z]+(?:'[a-zA-Z]+)?/g;
+const ROMAN_HINDI_HINT_WORDS = new Set([
   "kaise",
   "kya",
   "kyu",
   "kyun",
   "nahi",
-  "hai",
   "haan",
   "batao",
   "samjhao",
   "karna",
+  "karne",
+  "karo",
+  "kr",
+  "krna",
+  "krdo",
+  "krde",
   "banega",
   "banani",
-  "issue",
-  "problem",
-  "timetable",
-  "faculty",
-  "subject",
-  "section",
-  "dashboard",
-];
+  "banao",
+  "mujhe",
+  "mera",
+  "meri",
+  "mere",
+  "aap",
+  "hum",
+  "tum",
+  "chahiye",
+  "thik",
+  "theek",
+  "abhi",
+  "yaar",
+  "bhai",
+]);
 
 const RATE_LIMIT_WINDOW_MS = parseDurationToMs(process.env.CHAT_RATE_LIMIT_WINDOW || "1m", 60 * 1000);
 const RATE_LIMIT_MAX_REQUESTS = Number.parseInt(process.env.CHAT_RATE_LIMIT_MAX_REQUESTS, 10) || 20;
@@ -51,14 +64,20 @@ if (typeof rateCleanupTimer.unref === "function") {
 function detectLanguage(message) {
   const text = String(message || "").trim();
   if (!text) return "english";
-  if (DEVANAGARI_REGEX.test(text)) return "hindi";
 
-  const lower = text.toLowerCase();
-  const hintHits = HINGLISH_HINT_WORDS.reduce((count, word) => (lower.includes(word) ? count + 1 : count), 0);
-  if (hintHits >= 2) return "hinglish";
+  const hasHindiScript = DEVANAGARI_REGEX.test(text);
+  if (hasHindiScript) return "hindi";
 
-  const hasEnglishWords = /[a-z]{3,}/i.test(text);
-  if (hintHits >= 1 && hasEnglishWords) return "hinglish";
+  const latinWords = text.toLowerCase().match(LATIN_WORD_REGEX) || [];
+  if (!latinWords.length) return "english";
+
+  const romanHindiHits = latinWords.reduce(
+    (count, word) => count + (ROMAN_HINDI_HINT_WORDS.has(word) ? 1 : 0),
+    0
+  );
+
+  if (romanHindiHits >= 2) return "hinglish";
+  if (romanHindiHits === 1 && latinWords.length <= 4) return "hinglish";
   return "english";
 }
 
@@ -96,54 +115,55 @@ function normalizeMessage(message) {
 
 function buildFallbackGuide(message, language) {
   const text = String(message || "").toLowerCase();
-  const wantsFacultyGuide = /add\s+faculty|faculty\s+add|faculty\s+kaise|faculty/.test(text);
-  const wantsSubjectGuide = /add\s+subject|subject\s+add|subject\s+kaise|subject/.test(text);
-  const wantsGenerateGuide = /generate|generation|timetable\s+ban|create\s+timetable/.test(text);
-  const wantsErrorHelp = /error|issue|problem|failed|conflict|not working/.test(text);
+  const wantsFacultyGuide = /add\s+faculty|faculty\s+add|faculty\s+kaise|faculty|फैकल्टी|अध्यापक/.test(text);
+  const wantsSubjectGuide = /add\s+subject|subject\s+add|subject\s+kaise|subject|विषय/.test(text);
+  const wantsGenerateGuide =
+    /generate|generation|timetable\s+ban|create\s+timetable|समय[-\s]?सारणी|टाइमटेबल/.test(text);
+  const wantsErrorHelp = /error|issue|problem|failed|conflict|not working|गलती|समस्या|त्रुटि/.test(text);
 
   if (language === "hindi") {
     if (wantsFacultyGuide) {
-      return "बिल्कुल, Faculty जोड़ने के स्टेप्स:\n1. Dashboard खोलें और Academic Data सेक्शन पर जाएं।\n2. Faculty कार्ड चुनें और Add Record पर क्लिक करें।\n3. Faculty ID, नाम, विभाग, ईमेल, मोबाइल और बाकी जानकारी भरें।\n4. सही subjects और departments मैप करें।\n5. Save करें और सूची में एंट्री verify करें।";
+      return "बिलकुल, अध्यापक जोड़ने के चरण:\n1. मुख्य पटल में शैक्षणिक डेटा अनुभाग खोलें।\n2. अध्यापक सूची में नया अभिलेख जोड़ें।\n3. पहचान क्रमांक, नाम, विभाग, ईमेल और मोबाइल जैसी जानकारी भरें।\n4. सही विषय और विभाग मानचित्रण चुनें।\n5. सहेजें और सूची में प्रविष्टि की पुष्टि करें।";
     }
     if (wantsSubjectGuide) {
-      return "Subject जोड़ने के स्टेप्स:\n1. Academic Data में Subjects खोलें।\n2. Add Record पर क्लिक करें।\n3. Subject code, नाम, विभाग, semester और type (Theory/Practical) भरें।\n4. घंटे सही डालें (theory/practical)।\n5. Save करें और faculty mapping चेक करें।";
+      return "विषय जोड़ने के चरण:\n1. शैक्षणिक डेटा में विषय अनुभाग खोलें।\n2. नया अभिलेख जोड़ने का विकल्प चुनें।\n3. विषय कोड, नाम, विभाग, सेमेस्टर और प्रकार भरें।\n4. सिद्धांत और प्रायोगिक घंटे सही दर्ज करें।\n5. सहेजें और अध्यापक मानचित्रण की जांच करें।";
     }
     if (wantsGenerateGuide) {
-      return "Timetable generate करने के स्टेप्स:\n1. Timetable पैनल में जाएं।\n2. सही semester और version name चुनें।\n3. Generation strategy चुनें (Balanced/Compact/Faculty Friendly)।\n4. Generate Timetable पर क्लिक करें।\n5. Result में conflicts और warnings देखें, फिर ज़रूरत हो तो data सुधारकर दुबारा generate करें।";
+      return "समय-सारणी बनाने के चरण:\n1. समय-सारणी अनुभाग खोलें।\n2. सेमेस्टर और संस्करण नाम चुनें।\n3. उपयुक्त निर्माण रणनीति चुनें।\n4. समय-सारणी निर्माण शुरू करें।\n5. चेतावनी और टकराव देखकर आवश्यक सुधार करें, फिर दोबारा निर्माण करें।";
     }
     if (wantsErrorHelp) {
-      return "Error fix करने का quick तरीका:\n1. Error message का exact text नोट करें।\n2. Sections, Subjects, Faculty mappings और Time slots verify करें।\n3. Duplicate conflicts (faculty/room/section same slot) हटाएं।\n4. Timetable फिर से generate करें।\n5. अगर चाहें तो error text भेजें, मैं step-by-step debug कराऊँगा।";
+      return "त्रुटि ठीक करने की त्वरित प्रक्रिया:\n1. सटीक त्रुटि संदेश लिख लें।\n2. विषय, अनुभाग और अध्यापक मानचित्रण जांचें।\n3. एक ही समय पर आने वाले कक्ष, अध्यापक या अनुभाग टकराव हटाएं।\n4. समय खंड विन्यास की पुष्टि करें।\n5. फिर से समय-सारणी बनाकर परिणाम मिलाएं।";
     }
-    return "मैं आपकी मदद कर सकता हूँ: faculty add करना, subjects set करना, timetable generate करना, और errors fix करना। अपना सवाल थोड़ा detail में भेजें।";
+    return "मैं अध्यापक जोड़ने, विषय प्रबंधन, समय-सारणी निर्माण और त्रुटि समाधान में आपकी मदद कर सकता हूँ। कृपया अपना प्रश्न विस्तार से लिखें।";
   }
 
   if (language === "hinglish") {
     if (wantsFacultyGuide) {
-      return "Bilkul, faculty add karne ke steps:\n1. Dashboard me Academic Data section kholo.\n2. Faculty card me Add Record pe click karo.\n3. Faculty ID, name, department, email, mobile fill karo.\n4. Subject/department mapping sahi select karo.\n5. Save karke list me verify karo.";
+      return "Bilkul, faculty add karne ke steps:\n1. Dashboard me Academic Data section kholo.\n2. Faculty card me Add Record pe click karo.\n3. Faculty ID, name, department, email, mobile fill karo.\n4. Subject aur department mapping sahi select karo.\n5. Save karke list me verify karo.";
     }
     if (wantsSubjectGuide) {
-      return "Subject add karne ke steps:\n1. Academic Data me Subjects open karo.\n2. Add Record pe click karo.\n3. Subject code, name, department, semester aur type select karo.\n4. Theory/Practical hours sahi set karo.\n5. Save karo aur faculty mapping check karo.";
+      return "Subject add karne ke steps:\n1. Academic Data me Subjects open karo.\n2. Add Record pe click karo.\n3. Subject code, name, department, semester aur type select karo.\n4. Theory aur Practical hours sahi set karo.\n5. Save karo aur faculty mapping check karo.";
     }
     if (wantsGenerateGuide) {
-      return "Timetable generate flow:\n1. Timetable panel open karo.\n2. Semester aur version name select karo.\n3. Strategy choose karo (Balanced/Compact/Faculty Friendly).\n4. Generate Timetable click karo.\n5. Result me conflicts/warnings dekh ke data fix karke re-run karo.";
+      return "Timetable generate karne ke steps:\n1. Timetable panel open karo.\n2. Semester aur version name select karo.\n3. Strategy choose karo.\n4. Generate Timetable click karo.\n5. Conflicts aur warnings dekhkar data fix karke dobara generate karo.";
     }
     if (wantsErrorHelp) {
-      return "Error fix karne ka fast plan:\n1. Exact error text copy karo.\n2. Faculty-subject mapping aur section setup check karo.\n3. Room/faculty/section same-slot conflicts resolve karo.\n4. Time slots configuration verify karo.\n5. Fir timetable generate karke output compare karo.";
+      return "Error fix karne ka plan:\n1. Exact error text note karo.\n2. Faculty, subject aur section mappings check karo.\n3. Room, faculty aur section ke same-slot conflicts resolve karo.\n4. Time slots configuration verify karo.\n5. Timetable dobara generate karke result compare karo.";
     }
-    return "Main aapko step-by-step guide kar sakta hoon: faculty add, subjects setup, timetable generate, aur error fixing. Aap apna question bhejo.";
+    return "Main faculty setup, subject management, timetable generation aur error fixing me aapki madad kar sakta hoon. Apna sawaal detail me bhejo.";
   }
 
   if (wantsFacultyGuide) {
     return "Sure. Steps to add faculty:\n1. Open Dashboard -> Academic Data.\n2. Open Faculty and click Add Record.\n3. Fill faculty ID, name, department, email, mobile, and profile details.\n4. Map departments and subjects correctly.\n5. Save and verify in the faculty list.";
   }
   if (wantsSubjectGuide) {
-    return "Steps to add subjects:\n1. Go to Academic Data -> Subjects.\n2. Click Add Record.\n3. Enter subject code, subject name, semester, department, and subject type.\n4. Set theory/practical hours accurately.\n5. Save and confirm faculty mapping.";
+    return "Steps to add subjects:\n1. Go to Academic Data -> Subjects.\n2. Click Add Record.\n3. Enter subject code, subject name, semester, department, and subject type.\n4. Set theory and practical hours accurately.\n5. Save and confirm faculty mapping.";
   }
   if (wantsGenerateGuide) {
-    return "Steps to generate timetable:\n1. Open Timetable panel.\n2. Select semester and enter version name.\n3. Choose strategy (Balanced/Compact/Faculty Friendly).\n4. Click Generate Timetable.\n5. Review conflicts/warnings and correct data if needed, then regenerate.";
+    return "Steps to generate timetable:\n1. Open Timetable panel.\n2. Select semester and enter version name.\n3. Choose a generation strategy.\n4. Click Generate Timetable.\n5. Review conflicts and warnings, fix the data, then regenerate.";
   }
   if (wantsErrorHelp) {
-    return "Quick error-fix workflow:\n1. Capture the exact error message.\n2. Verify faculty-subject and section mappings.\n3. Resolve room/faculty/section slot conflicts.\n4. Validate time slot configuration.\n5. Re-run generation and compare results.";
+    return "Quick error-fix workflow:\n1. Capture the exact error message.\n2. Verify faculty-subject and section mappings.\n3. Resolve room, faculty, and section slot conflicts.\n4. Validate time slot configuration.\n5. Re-run generation and compare results.";
   }
 
   return "I can help with adding faculty, managing subjects, generating timetables, and fixing timetable errors. Ask your question and I will guide you step by step.";
@@ -178,15 +198,16 @@ async function requestOpenAiReply({ message, language, role }) {
   const timeoutMs = Number.parseInt(process.env.OPENAI_CHAT_TIMEOUT_MS, 10) || 18000;
   const languageDirective =
     language === "hindi"
-      ? "Reply only in Hindi."
+      ? "Reply only in Hindi using Devanagari script."
       : language === "hinglish"
-        ? "Reply in natural Hinglish (Roman Hindi mixed with simple English)."
-        : "Reply in clear English.";
+        ? "Reply only in Hinglish written in Roman script (do not use Devanagari)."
+        : "Reply only in English.";
 
   const systemPrompt =
     "You are an assistant for Smart Classroom Timetable Generator. " +
     "Give practical, beginner-friendly, step-by-step guidance for dashboard operations, timetable generation, and troubleshooting. " +
     "Keep answers concise, actionable, and aligned to this project context. " +
+    "Language policy: strictly use the detected language only. Do not mix languages and do not default to Hinglish. " +
     languageDirective +
     ` User role: ${String(role || "faculty")}.`;
 
