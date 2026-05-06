@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { CalendarDays, Clock3, MapPin } from "lucide-react";
+import { motion } from "framer-motion";
 import { createTimetableMatrix, dayLabel, formatTimetableCell, getSlotLabel } from "../lib/timetable";
 import { Badge, Card } from "./ui";
 
@@ -18,16 +19,19 @@ function TimetableCell({ entry, isEmpty = false }) {
   const color = payload?.color || "#60a5fa";
 
   return (
-    <div
-      className="relative h-full min-h-[110px] overflow-hidden rounded-2xl border p-3 transition duration-200 hover:-translate-y-0.5 hover:shadow-soft"
+    <motion.div
+      whileHover={{ scale: 1.05, zIndex: 10, y: -5 }}
+      transition={{ type: "spring", stiffness: 300, damping: 20 }}
+      className="relative h-full min-h-[110px] overflow-hidden rounded-2xl border p-3 shadow-lg"
       style={{
         backgroundColor: `${color}18`,
         borderColor: `${color}40`,
+        boxShadow: `0 10px 30px -10px ${color}30`
       }}
     >
       <div className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: color }} />
       <div className="flex items-start justify-between gap-2">
-        <Badge className="border-0" tone="neutral">
+        <Badge className="border-0 bg-white/10" tone="neutral">
           {payload?.subjectCode || payload?.mode}
         </Badge>
         <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
@@ -42,7 +46,7 @@ function TimetableCell({ entry, isEmpty = false }) {
           <span>{payload?.room}</span>
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
