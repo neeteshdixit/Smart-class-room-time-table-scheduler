@@ -1,6 +1,95 @@
+# =========================================
+# Dependency Directories
+# =========================================
+# Node packages, ignore to prevent committing large/unnecessary binaries and dependencies
 node_modules/
+jspm_packages/
+.pnp/
+.pnp.js
+
+# =========================================
+# Environment Variables & Secrets
+# =========================================
+# Never commit secrets to git, these should be securely passed to environments
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================================
+# Build & Output Folders
+# =========================================
+# Ignore compiled assets, react builds (Vite uses dist/)
+dist/
+build/
+out/
+
+# =========================================
+# Uploads & User Generated Content
+# =========================================
+# Avoid committing user uploads like profile photos, PDFs (timetables)
 uploads/
+tmp/
+temp/
+
+# =========================================
+# Log Files
+# =========================================
+# Server/App crash logs, debug logs
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# =========================================
+# Testing & Coverage
+# =========================================
+# Local test reports and code coverage
+coverage/
+.nyc_output/
+
+# =========================================
+# Caches
+# =========================================
+# Various build and runtime caches
+.npm
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.vite/
+
+# =========================================
+# OS Generated Files
+# =========================================
+# Mac and Windows system metadata files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# =========================================
+# IDEs and Editors
+# =========================================
+# Local editor settings that shouldn't be shared
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# =========================================
+# Cloud/Hosting Temporary Files
+# =========================================
+# Vercel, Render, NextJS specific build caches
+.vercel/
