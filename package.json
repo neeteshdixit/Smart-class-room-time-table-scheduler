@@ -2,11 +2,16 @@
   "name": "smart-class-room-time-table-scheduler",
   "version": "1.0.0",
   "description": "Faculty Authentication and Timetable Scheduler for ITM University Gwalior",
-  "main": "server.js",
+  "main": "backend/server.js",
   "scripts": {
-    "dev": "nodemon server.js",
-    "start": "node server.js",
-    "db:init": "node scripts/initDb.js"
+    "dev": "npm run dev:backend",
+    "start": "npm run start:backend",
+    "dev:backend": "npm --prefix backend run dev",
+    "start:backend": "npm --prefix backend run start",
+    "db:init": "node scripts/initDb.js",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:frontend": "npm --prefix frontend run build",
+    "preview:frontend": "npm --prefix frontend run preview"
   },
   "keywords": [],
   "author": "",
