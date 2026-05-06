@@ -4,20 +4,27 @@
 
 :root {
   color-scheme: dark;
-  --app-bg: #050816;
-  --app-bg-2: #0b1120;
-  --surface: rgba(15, 23, 42, 0.78);
-  --surface-strong: rgba(15, 23, 42, 0.94);
-  --surface-soft: rgba(15, 23, 42, 0.58);
-  --border: rgba(148, 163, 184, 0.16);
-  --text-main: #e5eefb;
-  --text-muted: #94a3b8;
-  --text-soft: #cbd5e1;
-  --shadow-strong: 0 28px 80px rgba(2, 6, 23, 0.45);
-  --admin: #0066ff;
-  --faculty: #10b981;
-  --student: #ff8c42;
-  --success: #10b981;
+  --app-bg: #03050c; /* Deep Obsidian */
+  --app-bg-2: #0a0e17;
+  
+  /* Glassmorphism surfaces */
+  --surface: rgba(255, 255, 255, 0.03);
+  --surface-strong: rgba(255, 255, 255, 0.06);
+  --surface-soft: rgba(255, 255, 255, 0.015);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  
+  --text-main: #ffffff;
+  --text-muted: #a1a1aa;
+  --text-soft: #d4d4d8;
+  
+  --shadow-strong: 0 30px 60px -15px rgba(0, 0, 0, 0.8), 0 0 40px -10px rgba(0, 229, 255, 0.1);
+  
+  /* Neon Accents */
+  --admin: #00e5ff; /* Electric Cyan */
+  --faculty: #6366f1; /* Neon Indigo */
+  --student: #f43f5e; /* Rose */
+  --success: #10b981; /* Emerald */
   --error: #ef4444;
   --warning: #f59e0b;
   --info: #06b6d4;
@@ -41,6 +48,10 @@ body {
 
 * {
   box-sizing: border-box;
+}
+
+input, textarea {
+  cursor: text;
 }
 
 ::selection {
