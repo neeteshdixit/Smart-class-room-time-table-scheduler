@@ -293,6 +293,7 @@ function renderValue(value) {
 }
 
 function useMasterResource(resource) {
+  const config = MASTER_RESOURCES[resource];
   const [rows, setRows] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0 });
   const [loading, setLoading] = useState(false);
@@ -358,7 +359,7 @@ function useMasterResource(resource) {
         total: response.pagination?.total || 0,
       }));
     } catch (saveError) {
-      setError(`${config.title}: ${saveError.message || "Unable to save record"}`);
+      setError(`${config?.title || resource}: ${saveError.message || "Unable to save record"}`);
     } finally {
       setLoading(false);
     }
@@ -377,7 +378,7 @@ function useMasterResource(resource) {
         total: response.pagination?.total || 0,
       }));
     } catch (deleteError) {
-      setError(`${config.title}: ${deleteError.message || "Unable to delete record"}`);
+      setError(`${config?.title || resource}: ${deleteError.message || "Unable to delete record"}`);
     } finally {
       setLoading(false);
     }
@@ -641,6 +642,24 @@ export function MasterDataPage() {
 
   const totalPages = Math.max(1, Math.ceil((pagination.total || 0) / (pagination.limit || 10)));
 
+  const [totals, setTotals] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    statsApi.get(false)
+      .then((res) => {
+        if (!cancelled) setTotals(res.totals || {});
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pagination.total, resource]);
+
+  function getResourceTotal(key) {
+    if (!totals) return 0;
+    if (key === 'laboratories') return totals.labs || 0;
+    if (key === 'department-schedule-config') return totals.department_schedule_config || 0;
+    return totals[key] || 0;
+  }
+
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -681,8 +700,8 @@ export function MasterDataPage() {
                     {item.title}
                   </h3>
                 </div>
-                <div className="rounded-2xl bg-white/15 px-3 py-1 text-sm font-bold text-slate-900 dark:text-white">
-                  {Array.isArray(item.fields) ? item.fields.length : 0}
+                <div className="rounded-2xl bg-white/15 px-3 py-1 text-sm font-bold text-slate-900 dark:text-white" title="Total records">
+                  {getResourceTotal(key)}
                 </div>
               </div>
               <div className="mt-5 grid grid-cols-2 gap-2">
