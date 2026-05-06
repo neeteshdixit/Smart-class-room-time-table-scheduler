@@ -10,9 +10,10 @@ Node.js + Express + PostgreSQL implementation for:
 - Faculty dashboard + profile management
 - Academic/infrastructure master data APIs
 - Timetable generation + approval + reports
+- Redesigned React frontend in `frontend/`
 
 ## Tech Stack
-- Frontend: HTML + Bootstrap + Vanilla JS
+- Frontend: React + Tailwind CSS + Vite
 - Backend: Node.js + Express
 - Database: PostgreSQL
 - Auth: `bcryptjs` + JWT + Nodemailer SMTP
@@ -20,6 +21,7 @@ Node.js + Express + PostgreSQL implementation for:
 ## Project Structure
 ```text
 .
+|-- frontend/                # React + Tailwind redesign
 |-- public/                  # Landing page + auth + dashboard/profile UI
 |-- scripts/initDb.js        # Initializes PostgreSQL schema
 |-- src/
@@ -63,7 +65,12 @@ npm run db:init
 npm run dev
 ```
 
-6. Open:
+6. Start the React frontend:
+```bash
+npm run dev:frontend
+```
+
+7. Open:
 ```text
 http://localhost:5000
 ```
@@ -186,7 +193,7 @@ Optional payload flags:
 - Signup accepts `multipart/form-data` with `profile_photo` file upload.
 - Selected departments are stored in `faculty_departments`.
 - Selected subjects for registered users are stored in `faculty_subjects` using `faculty_user_id`.
-- Login access is available for `Admin` and `Faculty` roles.
+- Login access is available for `Admin`, `Faculty`, and `Student` roles.
 - `POST /api/generate-timetable` and `/api/timetable/*` management endpoints are `Admin` only.
 - Faculty users can only view assigned timetable via `GET /api/faculty/timetable`.
 - Account deletion requires JWT auth + password confirmation and writes an entry in `recent_activity`.
