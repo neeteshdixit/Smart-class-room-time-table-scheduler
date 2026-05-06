@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS faculty (
     id SERIAL PRIMARY KEY,
     faculty_id VARCHAR(50) UNIQUE NOT NULL,
     full_name VARCHAR(120) NOT NULL,
-    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
     designation VARCHAR(120) NOT NULL,
     qualification VARCHAR(120) NOT NULL,
     experience_years NUMERIC(4, 1) NOT NULL CHECK (experience_years >= 0),
@@ -166,8 +166,8 @@ CREATE TABLE IF NOT EXISTS subjects (
     id SERIAL PRIMARY KEY,
     subject_name VARCHAR(140) NOT NULL,
     subject_code VARCHAR(40) NOT NULL,
-    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE RESTRICT,
-    branch_id INTEGER REFERENCES branches(id) ON DELETE RESTRICT,
+    department_id INTEGER NOT NULL REFERENCES departments(id) ON DELETE CASCADE,
+    branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
     semester_id INTEGER NOT NULL REFERENCES semesters(id) ON DELETE CASCADE,
     subject_type VARCHAR(30) NOT NULL CHECK (subject_type IN ('Theory', 'Practical', 'Theory + Practical', 'Both')),
     total_hours INTEGER NOT NULL DEFAULT 0 CHECK (total_hours >= 0),
@@ -236,7 +236,7 @@ BEGIN
           AND column_name = 'branch_id'
     ) THEN
         ALTER TABLE subjects
-        ADD COLUMN branch_id INTEGER REFERENCES branches(id) ON DELETE RESTRICT;
+        ADD COLUMN branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE;
     END IF;
 END $$;
 
@@ -409,7 +409,7 @@ CREATE TABLE IF NOT EXISTS subject_faculty_assignment (
     id SERIAL PRIMARY KEY,
     section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
     subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE RESTRICT,
+    faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (section_id, subject_id)
 );
@@ -626,9 +626,9 @@ CREATE TABLE IF NOT EXISTS timetable_entries (
     timetable_id INTEGER NOT NULL REFERENCES timetables(id) ON DELETE CASCADE,
     section_id INTEGER NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
     subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
-    faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE RESTRICT,
-    classroom_id INTEGER NOT NULL REFERENCES classrooms(id) ON DELETE RESTRICT,
-    timeslot_id INTEGER NOT NULL REFERENCES time_slots(id) ON DELETE RESTRICT,
+    faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE CASCADE,
+    classroom_id INTEGER NOT NULL REFERENCES classrooms(id) ON DELETE CASCADE,
+    timeslot_id INTEGER NOT NULL REFERENCES time_slots(id) ON DELETE CASCADE,
     session_mode VARCHAR(20) NOT NULL DEFAULT 'Theory' CHECK (session_mode IN ('Theory', 'Practical')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_timetable_entries_faculty_slot UNIQUE (timetable_id, faculty_id, timeslot_id),
