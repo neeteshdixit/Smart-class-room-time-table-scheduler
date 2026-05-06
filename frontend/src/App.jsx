@@ -1,6 +1,8 @@
 import React, { Suspense, lazy } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import { AppShell } from "./components/layout";
+import PageTransition from "./components/PageTransition";
 import { useAuth } from "./context/AuthContext";
 import { roleToPath } from "./lib/theme";
 import {
@@ -30,14 +32,25 @@ const NotFoundPage = lazyNamed(() => import("./pages/NotFoundPage"), "NotFoundPa
 
 function LoadingScreen() {
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="glass rounded-3xl px-6 py-5 text-center">
-        <div
-          className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-white/10 border-t-[color:var(--accent)]"
-          style={{ "--accent": "#0066FF" }}
-        />
-        <p className="mt-4 text-sm text-slate-300">Loading secure workspace...</p>
-      </div>
+    <div className="flex min-h-screen items-center justify-center px-4 bg-[#03050C]">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+        className="relative flex flex-col items-center justify-center"
+      >
+        <div className="absolute inset-0 -z-10 animate-pulse rounded-full bg-[color:var(--accent)] blur-[60px] opacity-20" style={{ "--accent": "#00e5ff" }} />
+        <div className="glass rounded-3xl px-8 py-8 text-center shadow-2xl border border-white/10 relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent pointer-events-none" />
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+            className="mx-auto h-12 w-12 rounded-full border-2 border-white/5 border-t-[color:var(--accent)]"
+            style={{ "--accent": "#00e5ff" }}
+          />
+          <p className="mt-6 text-sm font-medium tracking-wide text-slate-300">Loading secure workspace...</p>
+        </div>
+      </motion.div>
     </div>
   );
 }
@@ -61,15 +74,7 @@ function PublicRoute({ requirePendingLogin = false, children }) {
   if (requirePendingLogin && !pendingLogin?.loginToken) {
     return <Navigate to="/login" replace />;
   }
-  return children;
-}
-
-function ShellPage({ roles, children }) {
-  return (
-    <ProtectedRoute roles={roles}>
-      <AppShell>{children}</AppShell>
-    </ProtectedRoute>
-  );
+  return <PageTransition>{children}</PageTransition>;
 }
 
 function HomeRedirect() {
@@ -85,150 +90,67 @@ function DashboardRedirect() {
   return <Navigate to={roleToPath(role)} replace />;
 }
 
+function AuthenticatedRoutes() {
+  const location = useLocation();
+  const { role } = useAuth();
+
+  return (
+    <AppShell>
+      <AnimatePresence mode="wait">
+        <Routes location={location} key={location.pathname}>
+          <Route path="/dashboard" element={<DashboardRedirect />} />
+          
+          <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><PageTransition><AdminDashboardPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/master-data" element={<ProtectedRoute roles={["admin"]}><PageTransition><MasterDataPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/timetable" element={<ProtectedRoute roles={["admin"]}><PageTransition><TimetablePage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/reports" element={<ProtectedRoute roles={["admin"]}><PageTransition><ReportsPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/activity-logs" element={<ProtectedRoute roles={["admin"]}><PageTransition><ActivityLogsPage /></PageTransition></ProtectedRoute>} />
+
+          <Route path="/faculty" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyDashboardPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/faculty/timetable" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyTimetablePage /></PageTransition></ProtectedRoute>} />
+          <Route path="/faculty/student-timetable" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyStudentTimetablePage /></PageTransition></ProtectedRoute>} />
+
+          <Route path="/student" element={<ProtectedRoute roles={["student", "user"]}><PageTransition><StudentDashboardPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/student/timetable" element={<ProtectedRoute roles={["student", "user"]}><PageTransition><StudentTimetablePage /></PageTransition></ProtectedRoute>} />
+
+          <Route path="/profile" element={<ProtectedRoute><PageTransition><ProfilePage /></PageTransition></ProtectedRoute>} />
+          
+          <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
+        </Routes>
+      </AnimatePresence>
+    </AppShell>
+  );
+}
+
 export default function App() {
+  const location = useLocation();
+  const { isAuthenticated, isBootstrapping } = useAuth();
+
+  if (isBootstrapping) return <LoadingScreen />;
+
+  if (!isAuthenticated) {
+    return (
+      <Suspense fallback={<LoadingScreen />}>
+        <AnimatePresence mode="wait">
+          <Routes location={location} key={location.pathname}>
+            <Route path="/" element={<HomeRedirect />} />
+            <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
+            <Route path="/signup" element={<PublicRoute><SignupPage /></PublicRoute>} />
+            <Route path="/otp" element={<PublicRoute requirePendingLogin><OtpPage /></PublicRoute>} />
+            <Route path="/forgot-password" element={<PublicRoute><ForgotPasswordPage /></PublicRoute>} />
+            <Route path="/reset-password" element={<PublicRoute><ResetPasswordPage /></PublicRoute>} />
+            <Route path="*" element={<Navigate to="/login" replace />} />
+          </Routes>
+        </AnimatePresence>
+      </Suspense>
+    );
+  }
+
   return (
     <Suspense fallback={<LoadingScreen />}>
       <Routes>
         <Route path="/" element={<HomeRedirect />} />
-
-        <Route
-          path="/login"
-          element={
-            <PublicRoute>
-              <LoginPage />
-            </PublicRoute>
-          }
-        />
-        <Route
-          path="/signup"
-          element={
-            <PublicRoute>
-              <SignupPage />
-            </PublicRoute>
-          }
-        />
-        <Route
-          path="/otp"
-          element={
-            <PublicRoute requirePendingLogin>
-              <OtpPage />
-            </PublicRoute>
-          }
-        />
-        <Route
-          path="/forgot-password"
-          element={
-            <PublicRoute>
-              <ForgotPasswordPage />
-            </PublicRoute>
-          }
-        />
-        <Route
-          path="/reset-password"
-          element={
-            <PublicRoute>
-              <ResetPasswordPage />
-            </PublicRoute>
-          }
-        />
-
-        <Route path="/dashboard" element={<ProtectedRoute><DashboardRedirect /></ProtectedRoute>} />
-
-        <Route
-          path="/admin"
-          element={
-            <ShellPage roles={["admin"]}>
-              <AdminDashboardPage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/admin/master-data"
-          element={
-            <ShellPage roles={["admin"]}>
-              <MasterDataPage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/admin/timetable"
-          element={
-            <ShellPage roles={["admin"]}>
-              <TimetablePage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/admin/reports"
-          element={
-            <ShellPage roles={["admin"]}>
-              <ReportsPage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/admin/activity-logs"
-          element={
-            <ShellPage roles={["admin"]}>
-              <ActivityLogsPage />
-            </ShellPage>
-          }
-        />
-
-        <Route
-          path="/faculty"
-          element={
-            <ShellPage roles={["faculty"]}>
-              <FacultyDashboardPage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/faculty/timetable"
-          element={
-            <ShellPage roles={["faculty"]}>
-              <FacultyTimetablePage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/faculty/student-timetable"
-          element={
-            <ShellPage roles={["faculty"]}>
-              <FacultyStudentTimetablePage />
-            </ShellPage>
-          }
-        />
-
-        <Route
-          path="/student"
-          element={
-            <ShellPage roles={["student", "user"]}>
-              <StudentDashboardPage />
-            </ShellPage>
-          }
-        />
-        <Route
-          path="/student/timetable"
-          element={
-            <ShellPage roles={["student", "user"]}>
-              <StudentTimetablePage />
-            </ShellPage>
-          }
-        />
-
-        <Route
-          path="/profile"
-          element={
-            <ProtectedRoute>
-              <AppShell>
-                <ProfilePage />
-              </AppShell>
-            </ProtectedRoute>
-          }
-        />
-
-        <Route path="*" element={<NotFoundPage />} />
+        <Route path="*" element={<AuthenticatedRoutes />} />
       </Routes>
     </Suspense>
   );
