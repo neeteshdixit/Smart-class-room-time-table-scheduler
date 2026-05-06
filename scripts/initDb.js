@@ -1,6 +1,6 @@
 require("dotenv").config();
-const pool = require("../src/config/db");
-const { initializeSchema } = require("../src/db/initializeSchema");
+const pool = require("../backend/src/config/db");
+const { initializeSchema } = require("../backend/src/db/initializeSchema");
 
 async function run() {
   try {
