@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
+import { motion } from "framer-motion";
 import {
   Bell,
   ChevronRight,
@@ -43,7 +44,7 @@ function navForRole(role) {
 
 function NavItems({ items, onNavigate, collapsed = false }) {
   return (
-    <nav className="space-y-1">
+    <nav className="relative space-y-2">
       {items.map((item) => {
         const Icon = ICONS[item.icon] || ChevronRight;
         return (
@@ -53,20 +54,29 @@ function NavItems({ items, onNavigate, collapsed = false }) {
             onClick={onNavigate}
             className={({ isActive }) =>
               [
-                "group flex items-center gap-3 rounded-2xl border px-3 py-3 text-sm font-medium transition-all duration-200",
+                "group relative flex items-center gap-3 rounded-2xl px-3 py-3 text-sm font-medium transition-all duration-300",
                 isActive
-                  ? "border-transparent text-white shadow-soft"
-                  : "border-transparent text-slate-300 hover:border-white/10 hover:bg-white/5 hover:text-white",
+                  ? "text-white"
+                  : "text-slate-400 hover:text-white",
               ].join(" ")
             }
-            style={({ isActive }) => ({
-              backgroundColor: isActive ? "var(--accent-soft)" : "transparent",
-            })}
           >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/5">
-              <Icon className="h-4.5 w-4.5" />
-            </span>
-            {!collapsed ? <span className="truncate">{item.label}</span> : null}
+            {({ isActive }) => (
+              <>
+                {isActive && (
+                  <motion.div
+                    layoutId="activeSidebarTab"
+                    className="absolute inset-0 z-0 rounded-2xl bg-white/10 shadow-[0_0_20px_rgba(255,255,255,0.05)] border border-white/10"
+                    initial={false}
+                    transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                  />
+                )}
+                <span className="relative z-10 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/5 group-hover:bg-white/10 transition-colors">
+                  <Icon className="h-5 w-5" />
+                </span>
+                {!collapsed ? <span className="relative z-10 truncate tracking-wide">{item.label}</span> : null}
+              </>
+            )}
           </NavLink>
         );
       })}
