@@ -127,15 +127,29 @@ function resolveWorkingDays(workingDays) {
   }
 
   const raw = String(workingDays || "").trim();
-  const normalized = raw.toLowerCase();
-  if (normalized === "mon-sun" || normalized === "monday-sunday") {
-    return [1, 2, 3, 4, 5, 6, 7];
-  }
-  if (normalized === "mon-sat" || normalized === "monday-saturday") {
-    return [1, 2, 3, 4, 5, 6];
-  }
-  if (normalized === "mon-fri" || normalized === "monday-friday") {
-    return [1, 2, 3, 4, 5];
+  const normalized = raw.toUpperCase();
+
+  // Support new normalized tokens
+  if (normalized === "MON_FRI" || normalized === "MON-FRI") return [1, 2, 3, 4, 5];
+  if (normalized === "MON_SAT" || normalized === "MON-SAT") return [1, 2, 3, 4, 5, 6];
+  if (normalized === "MON_SUN" || normalized === "MON-SUN") return [1, 2, 3, 4, 5, 6, 7];
+  if (normalized === "TUE_SAT") return [2, 3, 4, 5, 6];
+
+  // Old legacy formats
+  if (normalized === "MONDAY-SUNDAY") return [1, 2, 3, 4, 5, 6, 7];
+  if (normalized === "MONDAY-SATURDAY") return [1, 2, 3, 4, 5, 6];
+  if (normalized === "MONDAY-FRIDAY") return [1, 2, 3, 4, 5];
+
+  // JSON Array String support (e.g. "[1,2,3]")
+  if (raw.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return resolveWorkingDays(parsed);
+      }
+    } catch (e) {
+      // fallback
+    }
   }
 
   const parsedCount = Number(raw);
@@ -2236,7 +2250,7 @@ async function generateTimetableHandler(req, res, next) {
           const demandCount = Math.max(0, asNonNegativeInteger(demand.count, 0));
           const dayOffsetBase = workingDaySequence.length
             ? (Number(section.id) * 31 + Number(subject.id) * 17 + (demand.mode === "Practical" ? 7 : 3)) %
-              workingDaySequence.length
+            workingDaySequence.length
             : 0;
           for (let i = 0; i < demandCount; i += 1) {
             const preferredDay = workingDaySequence.length
@@ -3292,7 +3306,7 @@ async function generateTimetableHandler(req, res, next) {
     }
     emptySlots = buildEmptySlotsSnapshot();
 
-   if (emptySlots.length > 0) {
+    if (emptySlots.length > 0) {
       // Cap bypass karke force fill karo
       for (const emptySlot of emptySlots) {
         const section = sectionById.get(Number(emptySlot.section_id));
@@ -3430,11 +3444,11 @@ async function generateTimetableHandler(req, res, next) {
     const uniqueAssignedRoomIds = [...new Set(entries.map((entry) => Number(entry.classroom_id)).filter((id) => Number.isInteger(id) && id > 0))];
     const roomValidationResult = uniqueAssignedRoomIds.length
       ? await client.query(
-          `SELECT id, room_number, room_type
+        `SELECT id, room_number, room_type
            FROM classrooms
            WHERE id = ANY($1::int[])`,
-          [uniqueAssignedRoomIds]
-        )
+        [uniqueAssignedRoomIds]
+      )
       : { rows: [] };
     const validatedRoomTypeById = new Map(
       roomValidationResult.rows.map((room) => [Number(room.id), String(room.room_type || "").toLowerCase()])
