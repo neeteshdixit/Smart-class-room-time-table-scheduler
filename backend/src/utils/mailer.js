@@ -241,12 +241,22 @@ async function sendTimetableSharedEmails(recipients, payload = {}) {
   }));
 }
 
+async function sendAccountDeleteOtpEmail(email, otpCode, expiryMinutes = 2) {
+  const safeExpiry = Number.isInteger(Number(expiryMinutes)) && Number(expiryMinutes) > 0 ? Number(expiryMinutes) : 2;
+  await sendEmail({
+    to: email,
+    subject: "Account Deletion OTP",
+    text: `Your OTP for account deletion is: ${otpCode}\nThis action is permanent and cannot be undone.\nThis OTP is valid for ${safeExpiry} minute${safeExpiry === 1 ? "" : "s"}.`,
+  });
+}
+
 module.exports = {
   normalizeEmailList,
   sendBulkEmail,
   sendEmail,
   sendLoginOtpEmail,
   sendPasswordResetOtpEmail,
+  sendAccountDeleteOtpEmail,
   sendTimetableGeneratedEmails,
   sendTimetableSharedEmails,
 };
