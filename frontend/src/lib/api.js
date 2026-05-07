@@ -109,7 +109,7 @@ client.interceptors.request.use((config) => {
     config.headers = config.headers || {};
     config.headers.Authorization = `Bearer ${token}`;
   }
-  
+
   if (config.method === 'get') {
     config.params = config.params || {};
     config.params._t = Date.now();
@@ -118,7 +118,7 @@ client.interceptors.request.use((config) => {
     config.headers['Pragma'] = 'no-cache';
     config.headers['Expires'] = '0';
   }
-  
+
   return config;
 });
 
@@ -189,13 +189,22 @@ export const authApi = {
   resetPassword: (payload) => client.post("/auth/reset-password", payload).then(unwrap),
   signupMeta: () => client.get("/auth/signup-meta").then(unwrap),
   signupOptions: () => client.get("/auth/signup-options").then(unwrap),
+  checkAdmin: () => client.get("/auth/check-admin").then(unwrap),
   signup: (payload) => client.post("/auth/signup", payload).then(unwrap),
   logout: () => client.post("/auth/logout", {}).then(unwrap),
+  initiateDeleteSelf: (payload) => client.post("/auth/delete-self-initiate", payload).then(unwrap),
+  confirmDeleteSelf: (payload) => client.post("/auth/delete-self-confirm", payload).then(unwrap),
 };
 
 export const profileApi = {
   get: () => client.get("/profile").then(unwrap),
   update: (payload) => client.put("/profile", payload).then(unwrap),
+  uploadPhoto: (formData) =>
+    client
+      .post("/profile/photo", formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+      })
+      .then(unwrap),
   deleteAccount: (payload) => client.delete("/profile/delete-account", { data: payload }).then(unwrap),
 };
 
