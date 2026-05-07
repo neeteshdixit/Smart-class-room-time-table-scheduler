@@ -1,6 +1,6 @@
 import React from "react";
 import { AlertTriangle, ChevronRight, Loader2 } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { formatNumber } from "../lib/format";
 
 function joinClasses(...parts) {
@@ -81,24 +81,39 @@ export function Input({
   ...props
 }) {
   return (
-    <label className="block space-y-2">
-      {label ? <span className="block text-sm font-medium text-slate-200">{label}</span> : null}
-      <input
-        className={joinClasses(
-          "w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white placeholder:text-slate-500 shadow-inner outline-none transition focus:border-transparent focus:ring-2",
-          className
-        )}
-        style={{ "--tw-ring-color": accent }}
-        {...props}
-      />
+    <div className="space-y-2">
+      {label && (
+        <label className="block text-sm font-medium text-slate-200">
+          {label} {props.required && <span className="text-red-400">*</span>}
+        </label>
+      )}
+      <div className="relative group">
+        <input
+          className={joinClasses(
+            "w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white placeholder:text-slate-500 shadow-inner outline-none transition-all duration-200 focus:border-transparent focus:ring-2 group-hover:border-white/20",
+            error ? "border-red-500/50 ring-red-500/20" : "",
+            className
+          )}
+          style={{ "--tw-ring-color": accent }}
+          {...props}
+        />
+        <div 
+          className="absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-300 group-focus-within:opacity-100" 
+          style={{ backgroundColor: `${accent}10`, filter: 'blur(10px)' }}
+        />
+      </div>
       {hint && !error ? <p className="text-xs text-slate-500">{hint}</p> : null}
       {error ? (
-        <p className="flex items-center gap-1 text-xs text-red-300">
+        <motion.p 
+          initial={{ opacity: 0, y: -10 }} 
+          animate={{ opacity: 1, y: 0 }} 
+          className="flex items-center gap-1 text-xs text-red-300"
+        >
           <AlertTriangle className="h-3.5 w-3.5" />
           {error}
-        </p>
+        </motion.p>
       ) : null}
-    </label>
+    </div>
   );
 }
 
@@ -112,26 +127,44 @@ export function Select({
   ...props
 }) {
   return (
-    <label className="block space-y-2">
-      {label ? <span className="block text-sm font-medium text-slate-200">{label}</span> : null}
-      <select
-        className={joinClasses(
-          "w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none transition focus:border-transparent focus:ring-2",
-          className
-        )}
-        style={{ "--tw-ring-color": accent }}
-        {...props}
-      >
-        {children}
-      </select>
+    <div className="space-y-2">
+      {label && (
+        <label className="block text-sm font-medium text-slate-200">
+          {label} {props.required && <span className="text-red-400">*</span>}
+        </label>
+      )}
+      <div className="relative group">
+        <select
+          className={joinClasses(
+            "w-full appearance-none rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none transition-all duration-200 focus:border-transparent focus:ring-2 group-hover:border-white/20",
+            error ? "border-red-500/50 ring-red-500/20" : "",
+            className
+          )}
+          style={{ "--tw-ring-color": accent }}
+          {...props}
+        >
+          {children}
+        </select>
+        <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 transition-transform group-focus-within:rotate-180">
+          <ChevronRight className="h-4 w-4 rotate-90" />
+        </div>
+        <div 
+          className="absolute inset-0 -z-10 rounded-xl opacity-0 transition-opacity duration-300 group-focus-within:opacity-100" 
+          style={{ backgroundColor: `${accent}10`, filter: 'blur(10px)' }}
+        />
+      </div>
       {hint && !error ? <p className="text-xs text-slate-500">{hint}</p> : null}
       {error ? (
-        <p className="flex items-center gap-1 text-xs text-red-300">
+        <motion.p 
+          initial={{ opacity: 0, y: -10 }} 
+          animate={{ opacity: 1, y: 0 }} 
+          className="flex items-center gap-1 text-xs text-red-300"
+        >
           <AlertTriangle className="h-3.5 w-3.5" />
           {error}
-        </p>
+        </motion.p>
       ) : null}
-    </label>
+    </div>
   );
 }
 
@@ -266,28 +299,42 @@ export function DataTable({
             </tr>
           </thead>
           <tbody>
-            {rows.length ? (
-              rows.map((row, index) => (
-                <tr key={row[rowKey] ?? index} className="group transition hover:bg-white/[0.03]">
-                  {columns.map((column) => (
-                    <td key={column.key} className="border-b border-white/5 px-4 py-4 align-top text-sm text-slate-200">
-                      {column.render ? column.render(row) : row[column.key] ?? "—"}
-                    </td>
-                  ))}
-                  {renderActions ? (
-                    <td className="border-b border-white/5 px-4 py-4 align-top text-sm text-slate-200">
-                      {renderActions(row)}
-                    </td>
-                  ) : null}
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td className="px-4 py-10 text-center text-sm text-slate-400" colSpan={columns.length + (renderActions ? 1 : 0)}>
-                  {emptyMessage}
-                </td>
-              </tr>
-            )}
+            <AnimatePresence>
+              {rows.length ? (
+                rows.map((row, index) => (
+                  <motion.tr
+                    key={row[rowKey] ?? index}
+                    layout
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, x: -20, backgroundColor: "rgba(239, 68, 68, 0.1)" }}
+                    transition={{ duration: 0.2 }}
+                    className="group transition hover:bg-white/[0.03]"
+                  >
+                    {columns.map((column) => (
+                      <td key={column.key} className="border-b border-white/5 px-4 py-4 align-top text-sm text-slate-200">
+                        {column.render ? column.render(row) : row[column.key] ?? "—"}
+                      </td>
+                    ))}
+                    {renderActions ? (
+                      <td className="border-b border-white/5 px-4 py-4 align-top text-sm text-slate-200">
+                        {renderActions(row)}
+                      </td>
+                    ) : null}
+                  </motion.tr>
+                ))
+              ) : (
+                <motion.tr
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                >
+                  <td className="px-4 py-10 text-center text-sm text-slate-400" colSpan={columns.length + (renderActions ? 1 : 0)}>
+                    {emptyMessage}
+                  </td>
+                </motion.tr>
+              )}
+            </AnimatePresence>
           </tbody>
         </table>
       </div>
@@ -308,5 +355,134 @@ export function InlineAction({ children, onClick, className = "", title }) {
     >
       {children}
     </button>
+  );
+}
+
+export function DeleteConfirmationModal({ isOpen, onClose, onConfirm, title, description, isDeleting }) {
+  if (!isOpen) return null;
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm"
+            onClick={!isDeleting ? onClose : undefined}
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="relative w-full max-w-md overflow-hidden rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-red-500/20 text-red-400">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-white">{title || 'Confirm Deletion'}</h3>
+                <p className="mt-1 text-sm text-slate-400">
+                  {description || 'Are you sure you want to delete this record? This action cannot be undone.'}
+                </p>
+              </div>
+            </div>
+            <div className="mt-8 flex justify-end gap-3">
+              <Button variant="secondary" onClick={onClose} disabled={isDeleting}>
+                Cancel
+              </Button>
+              <Button variant="danger" onClick={onConfirm} disabled={isDeleting} className="min-w-[100px]">
+                {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Delete'}
+              </Button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+export function OtpInputs({ value, onChange, autoFocus = false, accent = "var(--accent)" }) {
+  const inputs = React.useRef([]);
+
+  React.useEffect(() => {
+    if (autoFocus && inputs.current[0]) {
+      inputs.current[0].focus();
+    }
+  }, [autoFocus]);
+
+  function updateAt(index, nextValue) {
+    const chars = String(value || "").padEnd(6, " ").slice(0, 6).split("");
+    chars[index] = nextValue.slice(-1);
+    const nextCode = chars.join("").replace(/\s/g, "");
+    onChange(nextCode);
+    if (nextValue && index < 5 && inputs.current[index + 1]) {
+      inputs.current[index + 1].focus();
+    }
+  }
+
+  function handleKeyDown(event, index) {
+    if (event.key === "Backspace" && !value[index] && index > 0) {
+      inputs.current[index - 1]?.focus();
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-center gap-2">
+      {Array.from({ length: 6 }).map((_, index) => (
+        <input
+          key={index}
+          ref={(node) => {
+            inputs.current[index] = node;
+          }}
+          value={value[index] || ""}
+          onChange={(event) => updateAt(index, event.target.value.replace(/\D/g, ""))}
+          onKeyDown={(event) => handleKeyDown(event, index)}
+          inputMode="numeric"
+          maxLength={1}
+          className="h-14 w-12 rounded-2xl border border-white/10 bg-slate-950/80 text-center font-mono text-xl font-semibold text-white outline-none transition focus:border-transparent focus:ring-2"
+          style={{ "--tw-ring-color": accent }}
+        />
+      ))}
+    </div>
+  );
+}
+
+export function Modal({ isOpen, onClose, title, description, children, footer, className = "" }) {
+  if (!isOpen) return null;
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-slate-950/60 backdrop-blur-sm"
+            onClick={onClose}
+          />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className={joinClasses(
+              "relative w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-slate-900 p-6 shadow-2xl",
+              className
+            )}
+          >
+            <div className="space-y-4">
+              <div>
+                <h3 className="font-display text-xl font-semibold text-white">{title}</h3>
+                {description ? <p className="mt-1 text-sm text-slate-400">{description}</p> : null}
+              </div>
+              <div className="py-2">{children}</div>
+              {footer ? <div className="flex justify-end gap-3 pt-4">{footer}</div> : null}
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
   );
 }
