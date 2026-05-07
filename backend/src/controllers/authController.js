@@ -166,6 +166,25 @@ async function logout(req, res, next) {
   }
 }
 
+async function initiateAccountDelete(req, res, next) {
+  try {
+    const response = await authService.initiateAccountDelete(req.user.userId, req.body);
+    return res.json(response);
+  } catch (err) {
+    return handleError(err, next, res);
+  }
+}
+
+async function verifyAccountDelete(req, res, next) {
+  try {
+    const response = await authService.verifyAccountDelete(req.user.userId, req.body);
+    clearRefreshCookie(res);
+    return res.json(response);
+  } catch (err) {
+    return handleError(err, next, res);
+  }
+}
+
 module.exports = {
   getSignupMeta,
   checkAdmin,
@@ -181,4 +200,6 @@ module.exports = {
   resetPassword,
   refreshAccessToken,
   logout,
+  initiateAccountDelete,
+  verifyAccountDelete,
 };
