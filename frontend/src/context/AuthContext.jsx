@@ -274,6 +274,55 @@ export function AuthProvider({ children }) {
     } catch (profileError) {
       setError(profileError?.data?.message || profileError?.response?.data?.message || profileError.message || "Unable to update profile");
       throw profileError;
+      setIsBusy(false);
+    }
+  }
+
+  async function updateProfilePhoto(file) {
+    setIsBusy(true);
+    setError("");
+    try {
+      const formData = new FormData();
+      formData.append("profile_photo", file);
+      const response = await profileApi.uploadPhoto(formData);
+      if (response?.profile_photo_url) {
+        const nextUser = { ...user, profile_photo_url: response.profile_photo_url };
+        setUser(nextUser);
+        writeStoredUser(nextUser);
+      }
+      return response;
+    } catch (photoError) {
+      setError(photoError?.data?.message || photoError.message || "Unable to update profile photo");
+      throw photoError;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function initiateAccountDelete(password) {
+    setIsBusy(true);
+    setError("");
+    try {
+      const response = await authApi.initiateDeleteSelf({ password });
+      return response;
+    } catch (deleteError) {
+      setError(deleteError?.data?.message || deleteError.message || "Unable to initiate account deletion");
+      throw deleteError;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function confirmAccountDelete(otp_code) {
+    setIsBusy(true);
+    setError("");
+    try {
+      const response = await authApi.confirmDeleteSelf({ otp_code });
+      await logout();
+      return response;
+    } catch (confirmError) {
+      setError(confirmError?.data?.message || confirmError.message || "Unable to confirm account deletion");
+      throw confirmError;
     } finally {
       setIsBusy(false);
     }
@@ -318,6 +367,9 @@ export function AuthProvider({ children }) {
     completePasswordReset,
     refreshProfile,
     updateProfile,
+    updateProfilePhoto,
+    initiateAccountDelete,
+    confirmAccountDelete,
     logout,
     setPendingLogin: (nextValue) => {
       setPendingLoginState(nextValue);
