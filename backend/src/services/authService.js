@@ -25,7 +25,7 @@ const {
 const { addFacultyDepartments, addFacultyUserSubjects } = require("../models/facultyMappingModel");
 const { addSectionMentorMappings } = require("../models/mentorMappingModel");
 const { generateOtp } = require("../utils/otp");
-const { sendLoginOtpEmail, sendPasswordResetOtpEmail } = require("../utils/mailer");
+const { sendLoginOtpEmail, sendPasswordResetOtpEmail, sendAccountDeleteOtpEmail } = require("../utils/mailer");
 const { logActivity } = require("../utils/activity");
 const {
   consumeLoginOtpChallenge,
@@ -38,6 +38,9 @@ const {
   setLoginOtpChallenge,
   setPasswordResetOtp,
   verifyPasswordResetOtp,
+  setAccountDeleteOtp,
+  verifyAccountDeleteOtp,
+  consumeAccountDeleteOtp,
 } = require("../utils/transientOtpStore");
 const {
   buildRefreshCookieOptions,
@@ -526,19 +529,10 @@ async function login(payload) {
     ttlMs: getLoginOtpTtlMs(),
   });
 
-  try {
-    await sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes());
-  } catch (err) {
-    if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
-      console.warn("Login OTP email fallback (dev mode):", err.message);
-    } else {
-      invalidateLoginOtpChallenge(challengeId);
-      if (err.statusCode) {
-        throw err;
-      }
-      throw buildError(500, "Unable to send OTP email right now. Please try again.");
-    }
-  }
+  // Send email in background to keep response fast
+  sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes()).catch((err) => {
+    console.error("Background Login OTP Email Error:", err.message);
+  });
 
   const loginToken = jwt.sign({ userId: user.id, otpPending: true, challengeId }, process.env.JWT_SECRET, {
     expiresIn: getLoginOtpTokenExpiresIn(),
@@ -615,19 +609,11 @@ async function resendOtp(payload) {
     ttlMs: getLoginOtpTtlMs(),
   });
 
-  try {
-    await sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes());
-  } catch (err) {
-    if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
-      console.warn("Resend OTP email fallback (dev mode):", err.message);
-    } else {
-      invalidateLoginOtpChallenge(decoded.challengeId);
-      if (err.statusCode) {
-        throw err;
-      }
-      throw buildError(500, "Unable to send OTP email right now. Please try again.");
-    }
-  }
+  // Send email in background to keep response fast
+  // Send email in background to keep response fast
+  sendLoginOtpEmail(user.email, otpCode, getLoginOtpExpiryMinutes()).catch((err) => {
+    console.error("Background Resend OTP Email Error:", err.message);
+  });
 
   await logActivity(user.id, "OTP Resent", "OTP resent to registered email");
 
@@ -658,19 +644,10 @@ async function forgotPassword(payload) {
     ttlMs: getResetOtpTtlMs(),
   });
 
-  try {
-    await sendPasswordResetOtpEmail(user.email, otpCode, expiryMinutes);
-  } catch (err) {
-    if (String(process.env.NODE_ENV || "").toLowerCase() !== "production") {
-      console.warn("Password reset OTP fallback (dev mode):", err.message);
-    } else {
-      invalidatePasswordResetOtp(user.email);
-      if (err.statusCode) {
-        throw err;
-      }
-      throw buildError(500, "Unable to send OTP email right now. Please try again.");
-    }
-  }
+  // Send email in background to keep response fast
+  sendPasswordResetOtpEmail(user.email, otpCode, expiryMinutes).catch((err) => {
+    console.error("Background Password Reset OTP Email Error:", err.message);
+  });
 
   await logActivity(user.id, "Forgot Password Requested", "Password reset OTP sent to registered email");
 
@@ -828,6 +805,79 @@ async function logout(payload = {}) {
   return { success: true, message: "Logged out successfully" };
 }
 
+async function initiateAccountDelete(userId, payload) {
+  const user = await findAuthById(userId);
+  if (!user) {
+    throw buildError(404, "User not found");
+  }
+
+  if (String(user.role || "").toLowerCase() !== "admin") {
+    throw buildError(403, "Only administrators can initiate self-deletion via this secure flow.");
+  }
+
+  const validPassword = await bcrypt.compare(payload.password, user.password_hash);
+  if (!validPassword) {
+    throw buildError(401, "Invalid password. Account deletion aborted.");
+  }
+
+  const otpCode = generateOtp(6);
+  setAccountDeleteOtp({
+    email: user.email,
+    userId: user.id,
+    otpCode,
+    ttlMs: 5 * 60 * 1000,
+  });
+
+  sendAccountDeleteOtpEmail(user.email, otpCode, 5).catch((err) => {
+    console.error("Background Account Delete OTP Email Error:", err.message);
+  });
+
+  await logActivity(user.id, "Account Deletion Initiated", "OTP sent for final confirmation");
+
+  return {
+    message: "OTP sent to your registered email for final confirmation.",
+    email: user.email,
+    ...(String(process.env.NODE_ENV || "").toLowerCase() !== "production" ? { otp_code: otpCode } : {}),
+  };
+}
+
+async function verifyAccountDelete(userId, payload) {
+  const user = await findAuthById(userId);
+  if (!user) {
+    throw buildError(404, "User not found");
+  }
+
+  const verified = verifyAccountDeleteOtp({
+    email: user.email,
+    userId: user.id,
+    otpCode: payload.otp_code,
+  });
+
+  if (!verified.ok) {
+    throw buildError(401, "Invalid or expired OTP");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await revokeAllRefreshTokensForUser(user.id, client);
+    const deleted = await deleteUserById(user.id, client);
+    await client.query("COMMIT");
+    await logActivity(user.id, "Account Deleted", "Admin account permanently removed via self-delete flow");
+
+    return {
+      message: "Account deleted successfully. You have been logged out.",
+      deleted_user: deleted,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+    consumeAccountDeleteOtp(user.email);
+  }
+}
+
 module.exports = {
   signup,
   login,
@@ -843,6 +893,8 @@ module.exports = {
   resetPassword,
   refreshAccessToken,
   logout,
+  initiateAccountDelete,
+  verifyAccountDelete,
   getRefreshCookieConfig,
   readRefreshTokenFromRequest,
 };
