@@ -168,7 +168,8 @@ function isManualTimeSlotResource(resource) {
 
 router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, next) => {
   try {
-    const config = getConfig(req.params.resource);
+    const { resource } = req.params;
+    const config = getConfig(resource);
     if (!config) {
       return res.status(404).json({ message: "Unknown resource" });
     }
@@ -176,15 +177,43 @@ router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, n
     const page = Math.max(1, Number(req.query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
     const offset = (page - 1) * limit;
+    const q = req.query.q ? `%${String(req.query.q).toLowerCase()}%` : null;
+
+    let whereClauses = [];
+    let queryValues = [];
+
+    // Auto-filter by any field present in the table (e.g., department_id, branch_id)
+    config.fields.forEach((field) => {
+      if (req.query[field] !== undefined) {
+        whereClauses.push(`${field} = $${queryValues.length + 1}`);
+        queryValues.push(req.query[field]);
+      }
+    });
+
+    // Support search across text fields
+    if (q) {
+      const searchFields = config.fields.filter(f => f.includes('name') || f.includes('code') || f.includes('email'));
+      if (searchFields.length > 0) {
+        const searchClause = searchFields.map(f => `LOWER(${f}) LIKE $${queryValues.length + 1}`).join(" OR ");
+        whereClauses.push(`(${searchClause})`);
+        queryValues.push(q);
+      }
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM ${config.table} ${whereSql}`,
+      queryValues
+    );
 
     const result = await pool.query(
       `SELECT * FROM ${config.table}
+       ${whereSql}
        ORDER BY id DESC
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
+       LIMIT $${queryValues.length + 1} OFFSET $${queryValues.length + 2}`,
+      [...queryValues, limit, offset]
     );
-
-    const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM ${config.table}`);
 
     return res.json({
       data: result.rows,
