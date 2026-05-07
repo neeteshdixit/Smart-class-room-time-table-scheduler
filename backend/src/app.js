@@ -62,7 +62,7 @@ app.get("/runtime-config.js", (req, res) => {
 });
 
 const path = require("path");
-const uploadsPath = path.join(__dirname, "..", "..", "uploads");
+const uploadsPath = path.join(__dirname, "..", "uploads");
 app.use("/uploads", express.static(uploadsPath));
 app.use("/api", routes);
 
