@@ -1,6 +1,7 @@
 const stores = {
   login: new Map(),
   passwordReset: new Map(),
+  accountDelete: new Map(),
 };
 
 function nowMs() {
@@ -160,6 +161,47 @@ function invalidatePasswordResetOtp(email) {
   stores.passwordReset.delete(key);
 }
 
+function setAccountDeleteOtp({ email, userId, otpCode, ttlMs }) {
+  const key = normalizeKey(email);
+  if (!key) return;
+
+  stores.accountDelete.set(key, {
+    userId: Number(userId),
+    email: key,
+    otpCode: String(otpCode || "").trim(),
+    expiresAt: nowMs() + Math.max(1, Number(ttlMs) || 0),
+  });
+}
+
+function verifyAccountDeleteOtp({ email, userId, otpCode }) {
+  const key = normalizeKey(email);
+  if (!key) return { ok: false, reason: "missing_email" };
+
+  const entry = stores.accountDelete.get(key);
+  if (!entry) return { ok: false, reason: "expired" };
+
+  if (entry.expiresAt <= nowMs()) {
+    stores.accountDelete.delete(key);
+    return { ok: false, reason: "expired" };
+  }
+
+  if (Number(entry.userId) !== Number(userId)) {
+    return { ok: false, reason: "invalid_user" };
+  }
+
+  if (String(entry.otpCode) !== String(otpCode || "").trim()) {
+    return { ok: false, reason: "invalid_otp" };
+  }
+
+  return { ok: true, entry };
+}
+
+function consumeAccountDeleteOtp(email) {
+  const key = normalizeKey(email);
+  if (!key) return;
+  stores.accountDelete.delete(key);
+}
+
 module.exports = {
   consumeLoginOtpChallenge,
   consumePasswordResetVerification,
@@ -171,4 +213,7 @@ module.exports = {
   setLoginOtpChallenge,
   setPasswordResetOtp,
   verifyPasswordResetOtp,
+  setAccountDeleteOtp,
+  verifyAccountDeleteOtp,
+  consumeAccountDeleteOtp,
 };
