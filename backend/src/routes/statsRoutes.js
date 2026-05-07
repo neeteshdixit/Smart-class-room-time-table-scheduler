@@ -42,11 +42,7 @@ router.get("/", authRequired, requireRoles("admin"), async (req, res, next) => {
       getCount("department_schedule_config"),
       getCount("branches"),
       getCount("sections"),
-      pool.query(
-        `SELECT COUNT(*)::int AS total
-         FROM faculty_users
-         WHERE LOWER(role) = 'faculty'`
-      ).then((result) => result.rows[0].total),
+      getCount("faculty"),
       getCount("classrooms"),
       getCount("laboratories"),
       getCount("blocks"),
@@ -74,11 +70,11 @@ router.get("/", authRequired, requireRoles("admin"), async (req, res, next) => {
 
     const recentActivityResult = includeActivity
       ? await pool.query(
-          `SELECT action_type, details, created_at
+        `SELECT action_type, details, created_at
            FROM recent_activity
            ORDER BY created_at DESC
            LIMIT 10`
-        )
+      )
       : { rows: [] };
 
     return res.json({
