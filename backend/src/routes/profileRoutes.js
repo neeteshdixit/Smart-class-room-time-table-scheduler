@@ -5,6 +5,7 @@ const pool = require("../config/db");
 const { authRequired } = require("../middleware/auth");
 const { validateRequest } = require("../utils/validation");
 const { logActivity } = require("../utils/activity");
+const { uploadProfilePhoto } = require("../middleware/upload");
 const { findAuthById, deleteUserById } = require("../models/facultyUserModel");
 
 const router = express.Router();
@@ -125,66 +126,32 @@ router.put(
   }
 );
 
-router.delete(
-  "/delete-account",
-  authRequired,
-  [
-    body("password").notEmpty(),
-    body("confirm_password").notEmpty(),
-    validateRequest,
-  ],
-  async (req, res, next) => {
-    if (String(req.user?.role || "").toLowerCase() !== "admin") {
-      return res.status(403).json({ message: "Only admin can delete this account." });
+router.post("/photo", authRequired, uploadProfilePhoto, async (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "No image file provided" });
     }
 
-    if (req.body.password !== req.body.confirm_password) {
-      return res.status(400).json({ message: "Password and confirm password do not match." });
-    }
+    const photoUrl = `/uploads/profile-photos/${req.file.filename}`;
 
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
+    await pool.query(
+      `UPDATE faculty_users
+       SET profile_photo_url = $1
+       WHERE id = $2`,
+      [photoUrl, req.user.userId]
+    );
 
-      const account = await findAuthById(req.user.userId, client);
-      if (!account) {
-        throw buildRouteError(404, "Profile not found");
-      }
+    await logActivity(req.user.userId, "Profile Photo Updated", "User updated their profile picture");
 
-      const isPasswordValid = await bcrypt.compare(req.body.password, account.password_hash);
-      if (!isPasswordValid) {
-        throw buildRouteError(401, "Incorrect password. Account deletion cancelled.");
-      }
-
-      await client.query(
-        `INSERT INTO recent_activity (actor_id, action_type, details)
-         VALUES ($1, $2, $3)`,
-        [
-          account.id,
-          "Account Deleted",
-          `Self-deletion requested for faculty_id=${account.faculty_id}, role=${account.role}`,
-        ]
-      );
-
-      const deleted = await deleteUserById(account.id, client);
-      if (!deleted) {
-        throw buildRouteError(404, "Profile not found");
-      }
-
-      await client.query("COMMIT");
-      return res.json({
-        message: "Account deleted successfully. Please login again.",
-      });
-    } catch (err) {
-      await client.query("ROLLBACK");
-      if (err.statusCode) {
-        return res.status(err.statusCode).json({ message: err.message });
-      }
-      return next(err);
-    } finally {
-      client.release();
-    }
+    return res.json({
+      message: "Profile photo updated successfully",
+      profile_photo_url: photoUrl,
+    });
+  } catch (err) {
+    return next(err);
   }
-);
+});
+
+// Deleted old /delete-account route in favor of secure OTP flow in authRoutes.js
 
 module.exports = router;
