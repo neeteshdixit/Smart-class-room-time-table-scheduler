@@ -12,9 +12,11 @@ import {
   Upload,
 } from "lucide-react";
 import { motion } from "framer-motion";
-import { Button, Card, Input, Badge, SectionHeader, Select, Textarea } from "../components/ui";
+import { Button, Card, Input, Badge, SectionHeader, Select, Textarea, OtpInputs } from "../components/ui";
 import { getRoleTheme, roleToPath } from "../lib/theme";
 import { useAuth } from "../context/AuthContext";
+import { authApi } from "../lib/api";
+import { SmartSelect } from "../components/SmartSelect";
 
 function AuthSurface({ title, subtitle, accent, children, hero }) {
   return (
@@ -90,51 +92,7 @@ function AuthSurface({ title, subtitle, accent, children, hero }) {
   );
 }
 
-function OtpInputs({ value, onChange, autoFocus = false }) {
-  const inputs = useRef([]);
 
-  useEffect(() => {
-    if (autoFocus && inputs.current[0]) {
-      inputs.current[0].focus();
-    }
-  }, [autoFocus]);
-
-  function updateAt(index, nextValue) {
-    const chars = String(value || "").padEnd(6, " ").slice(0, 6).split("");
-    chars[index] = nextValue.slice(-1);
-    const nextCode = chars.join("").replace(/\s/g, "");
-    onChange(nextCode);
-    if (nextValue && index < 5 && inputs.current[index + 1]) {
-      inputs.current[index + 1].focus();
-    }
-  }
-
-  function handleKeyDown(event, index) {
-    if (event.key === "Backspace" && !value[index] && index > 0) {
-      inputs.current[index - 1]?.focus();
-    }
-  }
-
-  return (
-    <div className="flex items-center justify-center gap-2">
-      {Array.from({ length: 6 }).map((_, index) => (
-        <input
-          key={index}
-          ref={(node) => {
-            inputs.current[index] = node;
-          }}
-          value={value[index] || ""}
-          onChange={(event) => updateAt(index, event.target.value.replace(/\D/g, ""))}
-          onKeyDown={(event) => handleKeyDown(event, index)}
-          inputMode="numeric"
-          maxLength={1}
-          className="h-14 w-12 rounded-2xl border border-white/10 bg-slate-950/80 text-center font-mono text-xl font-semibold text-white outline-none transition focus:border-transparent focus:ring-2"
-          style={{ "--tw-ring-color": "var(--accent)" }}
-        />
-      ))}
-    </div>
-  );
-}
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -255,6 +213,21 @@ export function SignupPage() {
     subject_names: "",
     mentor_section_ids: "",
   });
+  const [adminExists, setAdminExists] = useState(false);
+
+  useEffect(() => {
+    async function check() {
+      try {
+        const res = await authApi.checkAdmin();
+        if (res?.admin_exists) {
+          setAdminExists(true);
+        }
+      } catch (err) {
+        // Ignore
+      }
+    }
+    check();
+  }, []);
 
   function updateField(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -305,7 +278,7 @@ export function SignupPage() {
             <Select label="Role" value={form.role} onChange={(e) => updateField("role", e.target.value)}>
               <option value="USER">Student</option>
               <option value="FACULTY">Faculty</option>
-              <option value="ADMIN">Admin</option>
+              {!adminExists && <option value="ADMIN">Admin</option>}
             </Select>
             {isFaculty ? (
               <Select label="Role type" value={form.role_type} onChange={(e) => updateField("role_type", e.target.value)}>
@@ -313,14 +286,53 @@ export function SignupPage() {
                 <option value="FACULTY_MENTOR">Faculty + Mentor</option>
               </Select>
             ) : (
-              <Input label="Department" value={form.department} onChange={(e) => updateField("department", e.target.value)} />
+              <SmartSelect
+                label="Department"
+                resource="departments"
+                value={form.department}
+                onChange={(val) => updateField("department", val)}
+              />
             )}
           </div>
 
           {isStudent ? (
             <div className="grid gap-4 sm:grid-cols-2">
-              <Input label="Section" value={form.office_location} onChange={(e) => updateField("office_location", e.target.value)} />
-              <Input label="Semester" value={form.employee_type} onChange={(e) => updateField("employee_type", e.target.value)} />
+              <SmartSelect
+                label="Branch"
+                resource="branches"
+                value={form.branch_id}
+                onChange={(val) => {
+                  updateField("branch_id", val);
+                  updateField("semester_id", "");
+                  updateField("office_location", "");
+                }}
+              />
+              <SmartSelect
+                label="Semester"
+                resource="semesters"
+                value={form.semester_id}
+                filter={form.branch_id ? { branch_id: form.branch_id } : {}}
+                disabled={!form.branch_id}
+                onChange={(val) => {
+                  updateField("semester_id", val);
+                  updateField("office_location", "");
+                }}
+              />
+              <SmartSelect
+                label="Section"
+                resource="sections"
+                value={form.office_location}
+                filter={form.semester_id ? { semester_id: form.semester_id } : {}}
+                disabled={!form.semester_id}
+                onChange={(val) => updateField("office_location", val)}
+              />
+              <Select label="Year" value={form.employee_type} onChange={(e) => updateField("employee_type", e.target.value)}>
+                <option value="">Select year</option>
+                <option value="1">1st Year</option>
+                <option value="2">2nd Year</option>
+                <option value="3">3rd Year</option>
+                <option value="4">4th Year</option>
+              </Select>
             </div>
           ) : null}
 
@@ -329,29 +341,49 @@ export function SignupPage() {
               <Input label="Designation" value={form.designation} onChange={(e) => updateField("designation", e.target.value)} required />
               <Input label="Qualification" value={form.qualification} onChange={(e) => updateField("qualification", e.target.value)} required />
               <Input label="Experience years" type="number" min="0" step="0.5" value={form.experience_years} onChange={(e) => updateField("experience_years", e.target.value)} required />
-              <Input label="Gender" value={form.gender} onChange={(e) => updateField("gender", e.target.value)} required />
+              <Select label="Gender" value={form.gender} onChange={(e) => updateField("gender", e.target.value)} required>
+                <option value="">Select gender</option>
+                <option value="Male">Male</option>
+                <option value="Female">Female</option>
+                <option value="Other">Other</option>
+              </Select>
               <Input label="Date of birth" type="date" value={form.dob} onChange={(e) => updateField("dob", e.target.value)} required />
               <Input label="Joining date" type="date" value={form.joining_date} onChange={(e) => updateField("joining_date", e.target.value)} required />
               <Textarea label="Address" rows={3} value={form.address} onChange={(e) => updateField("address", e.target.value)} required />
               <Input label="Office location" value={form.office_location} onChange={(e) => updateField("office_location", e.target.value)} />
-              <Input label="Employee type" value={form.employee_type} onChange={(e) => updateField("employee_type", e.target.value)} />
-              <Input label="Department names" value={form.department_names} onChange={(e) => updateField("department_names", e.target.value)} hint="Comma-separated if IDs are not available" />
+              <Select label="Employee type" value={form.employee_type} onChange={(e) => updateField("employee_type", e.target.value)}>
+                <option value="">Select type</option>
+                <option value="Full-time">Full-time</option>
+                <option value="Part-time">Part-time</option>
+                <option value="Contract">Contract</option>
+                <option value="Guest">Guest</option>
+              </Select>
+              <SmartSelect
+                label="Department"
+                resource="departments"
+                value={form.department}
+                onChange={(val) => updateField("department", val)}
+              />
               <Input label="Subject names" value={form.subject_names} onChange={(e) => updateField("subject_names", e.target.value)} hint="Comma-separated" />
-              <Input label="Mentor section IDs" value={form.mentor_section_ids} onChange={(e) => updateField("mentor_section_ids", e.target.value)} hint="Comma-separated IDs" />
+              <SmartSelect
+                label="Mentor Section"
+                resource="sections"
+                value={form.mentor_section_ids}
+                onChange={(val) => updateField("mentor_section_ids", val)}
+                hint="Assigned mentor section"
+              />
             </div>
           ) : isAdmin ? (
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="Designation" value={form.designation} onChange={(e) => updateField("designation", e.target.value)} placeholder="Administrator" />
-              <Input label="Department" value={form.department} onChange={(e) => updateField("department", e.target.value)} placeholder="Administration" />
+              <SmartSelect
+                label="Department"
+                resource="departments"
+                value={form.department}
+                onChange={(val) => updateField("department", val)}
+              />
             </div>
-          ) : (
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Input label="Roll number" value={form.designation} onChange={(e) => updateField("designation", e.target.value)} placeholder="Student roll number" required />
-              <Input label="Semester" value={form.employee_type} onChange={(e) => updateField("employee_type", e.target.value)} placeholder="e.g. 4" />
-              <Input label="Section" value={form.office_location} onChange={(e) => updateField("office_location", e.target.value)} placeholder="e.g. A" />
-              <Input label="Department" value={form.department} onChange={(e) => updateField("department", e.target.value)} placeholder="e.g. BCA" />
-            </div>
-          )}
+          ) : null}
 
           {error ? (
             <div className="rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">
