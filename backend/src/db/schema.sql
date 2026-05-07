@@ -449,7 +449,7 @@ CREATE TABLE IF NOT EXISTS department_schedule_config (
     slot_duration_minutes INTEGER NOT NULL CHECK (slot_duration_minutes > 0),
     break_duration_minutes INTEGER NOT NULL DEFAULT 0 CHECK (break_duration_minutes >= 0),
     break_after_slot_number INTEGER,
-    working_days VARCHAR(20) NOT NULL CHECK (working_days IN ('Mon-Fri', 'Mon-Sat', 'Mon-Sun', '5', '6', '7')),
+    working_days VARCHAR(25) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT chk_department_schedule_time_window CHECK (end_time > start_time),
     CONSTRAINT chk_department_schedule_break_config CHECK (
@@ -537,7 +537,7 @@ BEGIN
 
     ALTER TABLE department_schedule_config
     ADD CONSTRAINT department_schedule_config_working_days_check
-    CHECK (working_days IN ('Mon-Fri', 'Mon-Sat', 'Mon-Sun', '5', '6', '7'));
+    CHECK (working_days IN ('MON_FRI', 'MON_SAT', 'MON_SUN', 'TUE_SAT', 'CUSTOM') OR working_days LIKE '[%]' OR working_days IN ('Mon-Fri', 'Mon-Sat', 'Mon-Sun', '5', '6', '7'));
 END $$;
 
 CREATE TABLE IF NOT EXISTS semester_durations (
