@@ -57,12 +57,21 @@ function LoadingScreen() {
 
 function ProtectedRoute({ roles, children }) {
   const { isAuthenticated, role, isBootstrapping } = useAuth();
+  const location = useLocation();
 
   if (isBootstrapping) return <LoadingScreen />;
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
-  if (roles && roles.length && !roles.includes(String(role || "").toLowerCase())) {
+  
+  if (!isAuthenticated) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  const normalizedRole = String(role || "").toLowerCase();
+  
+  if (roles && roles.length && !roles.includes(normalizedRole)) {
+    console.warn(`Access denied for role: ${normalizedRole}. Required: ${roles.join(", ")}`);
     return <Navigate to={roleToPath(role)} replace />;
   }
+
   return children;
 }
 
