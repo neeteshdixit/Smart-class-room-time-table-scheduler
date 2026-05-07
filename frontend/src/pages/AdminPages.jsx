@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowRight,
@@ -48,6 +49,10 @@ import {
   Textarea,
 } from "../components/ui";
 import { TimetableGrid, TimetableLegend, TimetableStatStrip } from "../components/timetable";
+import { DeleteConfirmationModal } from "../components/ui";
+import { WorkingDaySelector } from "../components/WorkingDaySelector";
+import { SmartSelect } from "../components/SmartSelect";
+import { FormSkeleton, GridSkeleton } from "../components/FormSkeletons";
 
 const MASTER_RESOURCES = {
   departments: {
@@ -70,16 +75,16 @@ const MASTER_RESOURCES = {
     description: "Configure working hours, slot duration, and breaks for each department.",
     icon: Clock3,
     fields: [
-      { name: "department_id", label: "Department ID", type: "number", required: true },
+      { name: "department_id", label: "Department", type: "smart-select", resource: "departments", required: true },
       { name: "start_time", label: "Start time", type: "time", required: true },
       { name: "end_time", label: "End time", type: "time", required: true },
       { name: "slot_duration_minutes", label: "Slot duration (minutes)", type: "number", required: true, defaultValue: 60 },
       { name: "break_duration_minutes", label: "Break duration (minutes)", type: "number", required: true, defaultValue: 15 },
       { name: "break_after_slot_number", label: "Break after slot number", type: "number", defaultValue: 2 },
-      { name: "working_days", label: "Working days (JSON)", type: "textarea", hint: 'Example: ["Monday","Tuesday","Wednesday","Thursday","Friday"]' },
+      { name: "working_days", label: "Working Days Selection", type: "working-day-selector", required: true },
     ],
     columns: [
-      { key: "department_id", label: "Department ID" },
+      { key: "department_id", label: "Dept ID" },
       { key: "start_time", label: "Start" },
       { key: "end_time", label: "End" },
       { key: "slot_duration_minutes", label: "Slot" },
@@ -92,13 +97,13 @@ const MASTER_RESOURCES = {
     fields: [
       { name: "branch_name", label: "Branch name", type: "text", required: true },
       { name: "branch_code", label: "Branch code", type: "text", required: true },
-      { name: "department_id", label: "Department ID", type: "number", required: true, hint: "Use an existing department ID." },
+      { name: "department_id", label: "Department", type: "smart-select", resource: "departments", required: true },
       { name: "program_type", label: "Program type", type: "select", required: true, options: ["UG", "PG"] },
     ],
     columns: [
       { key: "branch_name", label: "Branch" },
       { key: "branch_code", label: "Code" },
-      { key: "department_id", label: "Department ID" },
+      { key: "department_id", label: "Dept ID" },
       { key: "program_type", label: "Program" },
     ],
   },
@@ -109,7 +114,7 @@ const MASTER_RESOURCES = {
     fields: [
       { name: "semester_number", label: "Semester number", type: "number", required: true },
       { name: "academic_year", label: "Academic year", type: "text", required: true, placeholder: "2025-26" },
-      { name: "branch_id", label: "Branch ID", type: "number", required: true },
+      { name: "branch_id", label: "Branch", type: "smart-select", resource: "branches", required: true, dependsOn: "department_id" },
     ],
     columns: [
       { key: "semester_number", label: "Semester" },
@@ -123,14 +128,14 @@ const MASTER_RESOURCES = {
     icon: LayoutGrid,
     fields: [
       { name: "section_name", label: "Section name", type: "text", required: true },
-      { name: "branch_id", label: "Branch ID", type: "number", required: true },
-      { name: "semester_id", label: "Semester ID", type: "number", required: true },
+      { name: "branch_id", label: "Branch", type: "smart-select", resource: "branches", required: true },
+      { name: "semester_id", label: "Semester", type: "smart-select", resource: "semesters", required: true, dependsOn: "branch_id" },
       { name: "student_strength", label: "Student strength", type: "number", defaultValue: 60 },
     ],
     columns: [
       { key: "section_name", label: "Section" },
       { key: "branch_id", label: "Branch ID" },
-      { key: "semester_id", label: "Semester ID" },
+      { key: "semester_id", label: "Sem ID" },
       { key: "student_strength", label: "Strength" },
     ],
   },
@@ -141,9 +146,9 @@ const MASTER_RESOURCES = {
     fields: [
       { name: "subject_name", label: "Subject name", type: "text", required: true },
       { name: "subject_code", label: "Subject code", type: "text", required: true },
-      { name: "department_id", label: "Department ID", type: "number", required: true },
-      { name: "branch_id", label: "Branch ID", type: "number", required: true },
-      { name: "semester_id", label: "Semester ID", type: "number", required: true },
+      { name: "department_id", label: "Department", type: "smart-select", resource: "departments", required: true },
+      { name: "branch_id", label: "Branch", type: "smart-select", resource: "branches", required: true, dependsOn: "department_id" },
+      { name: "semester_id", label: "Semester", type: "smart-select", resource: "semesters", required: true, dependsOn: "branch_id" },
       { name: "subject_type", label: "Subject type", type: "select", required: true, options: ["Theory", "Practical", "Theory + Practical"] },
       { name: "total_hours", label: "Total hours", type: "number", required: true, defaultValue: 0 },
       { name: "theory_hours", label: "Theory hours", type: "number", defaultValue: 0 },
@@ -154,7 +159,7 @@ const MASTER_RESOURCES = {
       { key: "subject_name", label: "Subject" },
       { key: "subject_code", label: "Code" },
       { key: "subject_type", label: "Type" },
-      { key: "semester_id", label: "Semester ID" },
+      { key: "semester_id", label: "Sem ID" },
     ],
   },
   faculty: {
@@ -164,7 +169,7 @@ const MASTER_RESOURCES = {
     fields: [
       { name: "faculty_id", label: "Faculty ID", type: "text", required: true },
       { name: "full_name", label: "Full name", type: "text", required: true },
-      { name: "department_id", label: "Department ID", type: "number", required: true },
+      { name: "department_id", label: "Department", type: "smart-select", resource: "departments", required: true },
       { name: "designation", label: "Designation", type: "text", required: true },
       { name: "qualification", label: "Qualification", type: "text", required: true },
       { name: "experience_years", label: "Experience years", type: "number", required: true, step: "0.5" },
@@ -176,23 +181,10 @@ const MASTER_RESOURCES = {
       { name: "avg_leaves_per_month", label: "Avg leaves/month", type: "number", defaultValue: 0, step: "0.1" },
     ],
     columns: [
-      { key: "faculty_id", label: "Faculty ID" },
+      { key: "faculty_id", label: "ID" },
       { key: "full_name", label: "Name" },
       { key: "designation", label: "Designation" },
       { key: "email", label: "Email" },
-    ],
-  },
-  blocks: {
-    title: "Blocks",
-    description: "Campus blocks used to organize classrooms and labs.",
-    icon: Blocks,
-    fields: [
-      { name: "block_name", label: "Block name", type: "text", required: true },
-      { name: "number_of_floors", label: "Number of floors", type: "number", required: true, defaultValue: 1 },
-    ],
-    columns: [
-      { key: "block_name", label: "Block" },
-      { key: "number_of_floors", label: "Floors" },
     ],
   },
   classrooms: {
@@ -202,7 +194,7 @@ const MASTER_RESOURCES = {
     fields: [
       { name: "room_number", label: "Room number", type: "text", required: true },
       { name: "capacity", label: "Capacity", type: "number", required: true, defaultValue: 0 },
-      { name: "block_id", label: "Block ID", type: "number", required: true },
+      { name: "block_id", label: "Block", type: "smart-select", resource: "blocks", required: true },
       { name: "floor_number", label: "Floor number", type: "number", required: true, defaultValue: 1 },
       { name: "room_type", label: "Room type", type: "select", required: true, options: ["Classroom", "Lab", "Seminar Hall", "Auditorium"] },
     ],
@@ -219,14 +211,14 @@ const MASTER_RESOURCES = {
     icon: Building2,
     fields: [
       { name: "lab_name", label: "Lab name", type: "text", required: true },
-      { name: "department_id", label: "Department ID", type: "number", required: true },
+      { name: "department_id", label: "Department", type: "smart-select", resource: "departments", required: true },
       { name: "capacity", label: "Capacity", type: "number", required: true, defaultValue: 0 },
       { name: "equipment_type", label: "Equipment type", type: "text" },
       { name: "lab_duration_preference", label: "Lab duration preference", type: "number", defaultValue: 120 },
     ],
     columns: [
       { key: "lab_name", label: "Lab" },
-      { key: "department_id", label: "Department ID" },
+      { key: "department_id", label: "Dept ID" },
       { key: "capacity", label: "Capacity" },
       { key: "equipment_type", label: "Equipment" },
     ],
@@ -294,99 +286,71 @@ function renderValue(value) {
 
 function useMasterResource(resource) {
   const config = MASTER_RESOURCES[resource];
-  const [rows, setRows] = useState([]);
+  const queryClient = useQueryClient();
   const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0 });
-  const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
   const [form, setForm] = useState(() => toInitialForm(resource));
   const [editingId, setEditingId] = useState(null);
-  const [reloadTick, setReloadTick] = useState(0);
+  const [deletingId, setDeletingId] = useState(null);
 
   useEffect(() => {
     setForm(toInitialForm(resource));
     setEditingId(null);
     setQuery("");
+    setPagination({ page: 1, limit: 10, total: 0 });
   }, [resource]);
 
+  const listQuery = useQuery({
+    queryKey: ["masterData", resource, pagination.page, pagination.limit, query],
+    queryFn: async () => {
+      const res = await masterApi.list(resource, { page: pagination.page, limit: pagination.limit, q: query || undefined });
+      return res;
+    },
+    keepPreviousData: true,
+  });
+
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      setLoading(true);
-      setError("");
-      try {
-        const response = await masterApi.list(resource, { page: pagination.page, limit: pagination.limit, q: query || undefined });
-        if (cancelled) return;
-        setRows(response.data || []);
-        setPagination((current) => ({
-          ...current,
-          page: response.pagination?.page || current.page,
-          limit: response.pagination?.limit || current.limit,
-          total: response.pagination?.total || 0,
-        }));
-      } catch (loadError) {
-        if (!cancelled) setError(loadError.message || "Unable to load data");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    if (listQuery.data?.pagination) {
+      setPagination((current) => ({
+        ...current,
+        total: listQuery.data.pagination.total || 0,
+      }));
     }
+  }, [listQuery.data]);
 
-    load();
+  const saveMutation = useMutation({
+    mutationFn: async (payload) => {
+      if (editingId) {
+        return masterApi.update(resource, editingId, payload);
+      }
+      return masterApi.create(resource, payload);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries(["masterData", resource]);
+      queryClient.invalidateQueries(["stats"]);
+      setForm(toInitialForm(resource));
+      setEditingId(null);
+    },
+  });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [resource, pagination.page, pagination.limit, query, reloadTick]);
+  const deleteMutation = useMutation({
+    mutationFn: (id) => masterApi.remove(resource, id),
+    onSuccess: () => {
+      queryClient.invalidateQueries(["masterData", resource]);
+      queryClient.invalidateQueries(["stats"]);
+      setDeletingId(null);
+    },
+  });
 
   async function saveRecord(event) {
     event.preventDefault();
-    setLoading(true);
-    setError("");
-    try {
-      const payload = normaliseFormPayload(resource, form);
-      if (editingId) {
-        await masterApi.update(resource, editingId, payload);
-      } else {
-        await masterApi.create(resource, payload);
-      }
-      setForm(toInitialForm(resource));
-      setEditingId(null);
-      const response = await masterApi.list(resource, { page: pagination.page, limit: pagination.limit, q: query || undefined });
-      setRows(response.data || []);
-      setPagination((current) => ({
-        ...current,
-        total: response.pagination?.total || 0,
-      }));
-    } catch (saveError) {
-      setError(`${config?.title || resource}: ${saveError.message || "Unable to save record"}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function removeRecord(id) {
-    if (!window.confirm("Delete this record?")) return;
-    setLoading(true);
-    setError("");
-    try {
-      await masterApi.remove(resource, id);
-      const response = await masterApi.list(resource, { page: pagination.page, limit: pagination.limit, q: query || undefined });
-      setRows(response.data || []);
-      setPagination((current) => ({
-        ...current,
-        total: response.pagination?.total || 0,
-      }));
-    } catch (deleteError) {
-      setError(`${config?.title || resource}: ${deleteError.message || "Unable to delete record"}`);
-    } finally {
-      setLoading(false);
-    }
+    const payload = normaliseFormPayload(resource, form);
+    saveMutation.mutate(payload);
   }
 
   function onEdit(row) {
     const nextForm = toInitialForm(resource);
-    MASTER_RESOURCES[resource].fields.forEach((field) => {
+    config.fields.forEach((field) => {
       if (row[field.name] !== undefined && row[field.name] !== null) {
         nextForm[field.name] = field.type === "checkbox" ? Boolean(row[field.name]) : row[field.name];
       }
@@ -396,55 +360,46 @@ function useMasterResource(resource) {
   }
 
   return {
-    rows,
+    rows: listQuery.data?.data || [],
     pagination,
     query,
     setQuery,
-    setPage: (nextPage) =>
-      setPagination((current) => ({
-        ...current,
-        page: Math.max(1, nextPage),
-      })),
-    reload: () => setReloadTick((value) => value + 1),
-    loading,
-    error,
+    setPage: (nextPage) => setPagination((c) => ({ ...c, page: Math.max(1, nextPage) })),
+    reload: () => listQuery.refetch(),
+    loading: listQuery.isLoading || listQuery.isFetching,
+    error: listQuery.error?.message || saveMutation.error?.message || deleteMutation.error?.message,
     form,
     setForm,
     editingId,
     setEditingId,
+    deletingId,
+    setDeletingId,
     saveRecord,
-    removeRecord,
+    isSaving: saveMutation.isLoading || saveMutation.isPending,
+    executeDelete: () => deleteMutation.mutate(deletingId),
+    isDeleting: deleteMutation.isLoading || deleteMutation.isPending,
     onEdit,
   };
 }
 
 export function AdminDashboardPage() {
-  const [summary, setSummary] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data: summary, isLoading: loading, error: queryError } = useQuery({
+    queryKey: ["stats", { includeActivity: true }],
+    queryFn: () => statsApi.get(true),
+  });
 
-  useEffect(() => {
-    let cancelled = false;
+  if (loading) {
+    return (
+      <div className="flex h-96 items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <RefreshCw className="h-8 w-8 animate-spin text-blue-500" />
+          <p className="text-sm text-slate-400">Loading dashboard data...</p>
+        </div>
+      </div>
+    );
+  }
 
-    async function load() {
-      setLoading(true);
-      setError("");
-      try {
-        const response = await statsApi.get(true);
-        if (!cancelled) setSummary(response);
-      } catch (loadError) {
-        if (!cancelled) setError(loadError.message || "Unable to load dashboard");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
+  const error = queryError?.message || "";
   const recentActivity = summary?.recent_activity || [];
 
   return (
@@ -475,9 +430,9 @@ export function AdminDashboardPage() {
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard icon={Database} label="Departments" value={summary?.totals?.departments || 0} tone="admin" />
-        <StatCard icon={CalendarRange} label="Timetable versions" value={summary?.totals?.timetable_versions || 0} tone="warning" />
-        <StatCard icon={Settings2} label="Faculty records" value={summary?.totals?.faculty || 0} tone="success" />
+        <StatCard icon={Database} label="Departments" value={summary?.totals?.departments ?? 0} tone="admin" />
+        <StatCard icon={CalendarRange} label="Timetable versions" value={summary?.totals?.timetable_versions ?? 0} tone="warning" />
+        <StatCard icon={Settings2} label="Faculty records" value={summary?.totals?.faculty ?? 0} tone="success" />
         <StatCard icon={Activity} label="Average workload" value={summary?.metrics?.average_faculty_workload ?? 0} tone="info" />
       </div>
 
@@ -635,23 +590,22 @@ export function MasterDataPage() {
     editingId,
     setEditingId,
     saveRecord,
-    removeRecord,
+    isSaving,
+    deletingId,
+    setDeletingId,
+    executeDelete,
+    isDeleting,
     onEdit,
   } = useMasterResource(resource);
   const config = MASTER_RESOURCES[resource];
 
   const totalPages = Math.max(1, Math.ceil((pagination.total || 0) / (pagination.limit || 10)));
 
-  const [totals, setTotals] = useState({});
-  useEffect(() => {
-    let cancelled = false;
-    statsApi.get(false)
-      .then((res) => {
-        if (!cancelled) setTotals(res.totals || {});
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [pagination.total, resource]);
+  const { data: statsData } = useQuery({
+    queryKey: ["stats"],
+    queryFn: () => statsApi.get(false),
+  });
+  const totals = statsData?.totals || {};
 
   function getResourceTotal(key) {
     if (!totals) return 0;
@@ -775,7 +729,6 @@ export function MasterDataPage() {
                   </Select>
                 );
               }
-
               if (field.type === "textarea") {
                 return (
                   <Textarea
@@ -789,6 +742,37 @@ export function MasterDataPage() {
                         [field.name]: event.target.value,
                       }))
                     }
+                    hint={field.hint}
+                  />
+                );
+              }
+
+              if (field.type === "smart-select") {
+                const filter = {};
+                if (field.dependsOn) {
+                  filter[field.dependsOn] = form[field.dependsOn];
+                }
+                return (
+                  <SmartSelect
+                    key={field.name}
+                    label={field.label}
+                    resource={field.resource}
+                    value={form[field.name]}
+                    filter={filter}
+                    disabled={field.dependsOn && !form[field.dependsOn]}
+                    onChange={(val) => {
+                      setForm((current) => {
+                        const next = { ...current, [field.name]: val };
+                        // Clear dependent fields
+                        config.fields.forEach((f) => {
+                          if (f.dependsOn === field.name) {
+                            next[f.name] = "";
+                          }
+                        });
+                        return next;
+                      });
+                    }}
+                    required={field.required}
                     hint={field.hint}
                   />
                 );
@@ -821,7 +805,7 @@ export function MasterDataPage() {
             ) : null}
 
             <div className="flex flex-col gap-3 sm:flex-row">
-              <Button type="submit" className="flex-1" disabled={loading}>
+              <Button type="submit" className="flex-1" disabled={isSaving}>
                 {editingId ? "Update record" : "Create record"}
               </Button>
               <Button
@@ -869,7 +853,7 @@ export function MasterDataPage() {
                 <Button variant="ghost" className="px-3 py-1.5 text-xs" onClick={() => onEdit(row)}>
                   Edit
                 </Button>
-                <Button variant="ghost" className="px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10" onClick={() => removeRecord(row.id)}>
+                <Button variant="ghost" className="px-3 py-1.5 text-xs text-red-300 hover:bg-red-500/10" onClick={() => setDeletingId(row.id)}>
                   Delete
                 </Button>
               </div>
@@ -895,6 +879,14 @@ export function MasterDataPage() {
           </div>
         </div>
       </div>
+      <DeleteConfirmationModal
+        isOpen={!!deletingId}
+        onClose={() => setDeletingId(null)}
+        onConfirm={executeDelete}
+        title={`Delete ${config.title} Record`}
+        description="Are you sure you want to delete this record? This action cannot be undone and will instantly reflect across the system."
+        isDeleting={isDeleting}
+      />
     </div>
   );
 }
@@ -1094,112 +1086,80 @@ export function TimetablePage() {
 
           <form className="mt-5 space-y-4" onSubmit={handleGenerate}>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Select
+              <SmartSelect
                 label="Department"
+                resource="departments"
                 value={form.department_id}
-                onChange={(event) => {
-                  const departmentId = event.target.value;
-                  setForm((current) => ({ ...current, department_id: departmentId, branch_id: "", semester_id: "", section_id: "" }));
-                }}
-              >
-                <option value="">Select department</option>
-                {masterOptions.departments.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.department_name}
-                  </option>
-                ))}
-              </Select>
-              <Select
+                onChange={(val) => setForm((current) => ({ ...current, department_id: val, branch_id: "", semester_id: "", section_id: "" }))}
+              />
+              <SmartSelect
                 label="Branch"
+                resource="branches"
                 value={form.branch_id}
-                onChange={(event) => setForm((current) => ({ ...current, branch_id: event.target.value, semester_id: "", section_id: "" }))}
-              >
-                <option value="">Select branch</option>
-                {masterOptions.branches
-                  .filter((item) => !form.department_id || String(item.department_id) === String(form.department_id))
-                  .map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.branch_name}
-                    </option>
-                  ))}
-              </Select>
-              <Select
+                filter={form.department_id ? { department_id: form.department_id } : {}}
+                disabled={!form.department_id}
+                onChange={(val) => setForm((current) => ({ ...current, branch_id: val, semester_id: "", section_id: "" }))}
+              />
+              <SmartSelect
                 label="Semester"
+                resource="semesters"
                 value={form.semester_id}
-                onChange={(event) => setForm((current) => ({ ...current, semester_id: event.target.value, section_id: "" }))}
+                filter={form.branch_id ? { branch_id: form.branch_id } : {}}
+                disabled={!form.branch_id}
                 required
-              >
-                <option value="">Select semester</option>
-                {masterOptions.semesters
-                  .filter((item) => !form.branch_id || String(item.branch_id) === String(form.branch_id))
-                  .map((item) => (
-                    <option key={item.id} value={item.id}>
-                      Semester {item.semester_number} / {item.academic_year}
-                    </option>
-                  ))}
-              </Select>
-              <Select
+                onChange={(val) => setForm((current) => ({ ...current, semester_id: val, section_id: "" }))}
+              />
+              <SmartSelect
                 label="Section"
+                resource="sections"
                 value={form.section_id}
-                onChange={(event) => setForm((current) => ({ ...current, section_id: event.target.value }))}
-              >
-                <option value="">Select section</option>
-                {masterOptions.sections
-                  .filter((item) => !form.semester_id || String(item.semester_id) === String(form.semester_id))
-                  .map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.section_name}
-                    </option>
-                  ))}
-              </Select>
-              <Select
+                filter={form.semester_id ? { semester_id: form.semester_id } : {}}
+                disabled={!form.semester_id}
+                onChange={(val) => setForm((current) => ({ ...current, section_id: val }))}
+              />
+              <SmartSelect
                 label="Faculty"
+                resource="faculty"
                 value={form.faculty_id}
-                onChange={(event) => setForm((current) => ({ ...current, faculty_id: event.target.value }))}
-              >
-                <option value="">Any faculty</option>
-                {masterOptions.faculty.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.full_name}
-                  </option>
-                ))}
-              </Select>
-              <Select
+                filter={form.department_id ? { department_id: form.department_id } : {}}
+                onSelectionChange={(faculty) => {
+                  if (faculty?.department_id && !form.department_id) {
+                    setForm(curr => ({ ...curr, department_id: String(faculty.department_id) }));
+                  }
+                }}
+                onChange={(val) => setForm((current) => ({ ...current, faculty_id: val }))}
+              />
+              <SmartSelect
                 label="Subject"
+                resource="subjects"
                 value={form.subject_id}
-                onChange={(event) => setForm((current) => ({ ...current, subject_id: event.target.value }))}
-              >
-                <option value="">Any subject</option>
-                {masterOptions.subjects.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.subject_name}
-                  </option>
-                ))}
-              </Select>
-              <Select
+                filter={form.semester_id ? { semester_id: form.semester_id } : {}}
+                onSelectionChange={(subject) => {
+                  if (subject) {
+                    setForm(curr => ({
+                      ...curr,
+                      department_id: curr.department_id || String(subject.department_id || ""),
+                      branch_id: curr.branch_id || String(subject.branch_id || ""),
+                      semester_id: curr.semester_id || String(subject.semester_id || ""),
+                    }));
+                  }
+                }}
+                disabled={!form.semester_id}
+                onChange={(val) => setForm((current) => ({ ...current, subject_id: val }))}
+              />
+              <SmartSelect
                 label="Classroom"
+                resource="classrooms"
                 value={form.classroom_id}
-                onChange={(event) => setForm((current) => ({ ...current, classroom_id: event.target.value }))}
-              >
-                <option value="">Any classroom</option>
-                {masterOptions.classrooms.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.room_number}
-                  </option>
-                ))}
-              </Select>
-              <Select
+                onChange={(val) => setForm((current) => ({ ...current, classroom_id: val }))}
+              />
+              <SmartSelect
                 label="Lab"
+                resource="laboratories"
                 value={form.lab_id}
-                onChange={(event) => setForm((current) => ({ ...current, lab_id: event.target.value }))}
-              >
-                <option value="">Any lab</option>
-                {masterOptions.laboratories.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.lab_name}
-                  </option>
-                ))}
-              </Select>
+                filter={form.department_id ? { department_id: form.department_id } : {}}
+                onChange={(val) => setForm((current) => ({ ...current, lab_id: val }))}
+              />
             </div>
             <Input
               label="Version name"
