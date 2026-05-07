@@ -176,17 +176,28 @@ function isValidSubjectType(value) {
 }
 
 function normalizeWorkingDays(value) {
+  if (Array.isArray(value)) {
+    return JSON.stringify(value);
+  }
   const raw = String(value || "").trim();
-  const normalized = raw.toLowerCase();
-  if (normalized === "mon-fri" || normalized === "monday-friday" || normalized === "5") {
-    return "Mon-Fri";
+  const normalized = raw.toUpperCase();
+
+  if (normalized === "MON_FRI" || normalized === "MON-FRI" || normalized === "5") {
+    return "MON_FRI";
   }
-  if (normalized === "mon-sat" || normalized === "monday-saturday" || normalized === "6") {
-    return "Mon-Sat";
+  if (normalized === "MON_SAT" || normalized === "MON-SAT" || normalized === "6") {
+    return "MON_SAT";
   }
-  if (normalized === "mon-sun" || normalized === "monday-sunday" || normalized === "7") {
-    return "Mon-Sun";
+  if (normalized === "MON_SUN" || normalized === "MON-SUN" || normalized === "7") {
+    return "MON_SUN";
   }
+  if (normalized === "TUE_SAT") {
+    return "TUE_SAT";
+  }
+  if (normalized === "CUSTOM" || raw.startsWith("[")) {
+    return raw.startsWith("[") ? raw : "CUSTOM";
+  }
+
   return "";
 }
 
@@ -901,6 +912,8 @@ router.get("/branches", authRequired, async (req, res, next) => {
     const { page, limit, offset } = parsePagination(req.query);
     const q = buildSearchTerm(req.query.q);
 
+    const departmentId = asPositiveInt(req.query.department_id, 0);
+
     const response = await listWithPagination({
       page,
       limit,
@@ -910,17 +923,19 @@ router.get("/branches", authRequired, async (req, res, next) => {
         FROM branches b
         JOIN departments d ON d.id = b.department_id
         WHERE ($1 = '' OR b.branch_name ILIKE $1 OR b.branch_code ILIKE $1 OR d.department_name ILIKE $1)
+          AND ($2 = 0 OR b.department_id = $2)
         ORDER BY b.id DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $3 OFFSET $4
       `,
-      queryValues: [q, limit, offset],
+      queryValues: [q, departmentId, limit, offset],
       countSql: `
         SELECT COUNT(*)::int AS total
         FROM branches b
         JOIN departments d ON d.id = b.department_id
         WHERE ($1 = '' OR b.branch_name ILIKE $1 OR b.branch_code ILIKE $1 OR d.department_name ILIKE $1)
+          AND ($2 = 0 OR b.department_id = $2)
       `,
-      countValues: [q],
+      countValues: [q, departmentId],
     });
 
     return res.json(response);
@@ -1125,6 +1140,9 @@ router.get("/sections", authRequired, async (req, res, next) => {
     const { page, limit, offset } = parsePagination(req.query);
     const q = buildSearchTerm(req.query.q);
 
+    const branchId = asPositiveInt(req.query.branch_id, 0);
+    const semesterId = asPositiveInt(req.query.semester_id, 0);
+
     const response = await listWithPagination({
       page,
       limit,
@@ -1136,18 +1154,22 @@ router.get("/sections", authRequired, async (req, res, next) => {
         LEFT JOIN branches b ON b.id = s.branch_id
         JOIN semesters sem ON sem.id = s.semester_id
         WHERE ($1 = '' OR s.section_name ILIKE $1 OR COALESCE(b.branch_name, '') ILIKE $1 OR sem.academic_year ILIKE $1)
+          AND ($2 = 0 OR s.branch_id = $2)
+          AND ($3 = 0 OR s.semester_id = $3)
         ORDER BY s.id DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $4 OFFSET $5
       `,
-      queryValues: [q, limit, offset],
+      queryValues: [q, branchId, semesterId, limit, offset],
       countSql: `
         SELECT COUNT(*)::int AS total
         FROM sections s
         LEFT JOIN branches b ON b.id = s.branch_id
         JOIN semesters sem ON sem.id = s.semester_id
         WHERE ($1 = '' OR s.section_name ILIKE $1 OR COALESCE(b.branch_name, '') ILIKE $1 OR sem.academic_year ILIKE $1)
+          AND ($2 = 0 OR s.branch_id = $2)
+          AND ($3 = 0 OR s.semester_id = $3)
       `,
-      countValues: [q],
+      countValues: [q, branchId, semesterId],
     });
 
     return res.json(response);
@@ -1350,6 +1372,8 @@ router.get("/faculty", authRequired, async (req, res, next) => {
     const { page, limit, offset } = parsePagination(req.query);
     const q = buildSearchTerm(req.query.q);
 
+    const departmentId = asPositiveInt(req.query.department_id, 0);
+
     const response = await listWithPagination({
       page,
       limit,
@@ -1357,6 +1381,7 @@ router.get("/faculty", authRequired, async (req, res, next) => {
         WITH faculty_view AS (
           SELECT fu.id, fu.faculty_id, fu.full_name, fu.email, fu.mobile_number, fu.created_at,
                  COALESCE(STRING_AGG(DISTINCT d.department_name, ', '), '-') AS departments,
+                 COALESCE(STRING_AGG(DISTINCT d.id::text, ','), '') AS department_ids,
                  COALESCE(STRING_AGG(DISTINCT s.subject_name, ', '), '-') AS subjects
           FROM faculty_users fu
           LEFT JOIN faculty_departments fd ON fd.faculty_user_id = fu.id
@@ -1369,28 +1394,25 @@ router.get("/faculty", authRequired, async (req, res, next) => {
         SELECT *
         FROM faculty_view
         WHERE ($1 = '' OR full_name ILIKE $1 OR faculty_id ILIKE $1 OR email ILIKE $1 OR departments ILIKE $1 OR subjects ILIKE $1)
+          AND ($2 = 0 OR department_ids LIKE '%' || $2 || '%')
         ORDER BY created_at DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $3 OFFSET $4
       `,
-      queryValues: [q, limit, offset],
+      queryValues: [q, departmentId, limit, offset],
       countSql: `
         WITH faculty_view AS (
           SELECT fu.id, fu.faculty_id, fu.full_name, fu.email, fu.mobile_number, fu.created_at,
-                 COALESCE(STRING_AGG(DISTINCT d.department_name, ', '), '-') AS departments,
-                 COALESCE(STRING_AGG(DISTINCT s.subject_name, ', '), '-') AS subjects
+                 COALESCE(STRING_AGG(DISTINCT d.id::text, ','), '') AS department_ids
           FROM faculty_users fu
           LEFT JOIN faculty_departments fd ON fd.faculty_user_id = fu.id
-          LEFT JOIN departments d ON d.id = fd.department_id
-          LEFT JOIN faculty_subjects fs ON fs.faculty_user_id = fu.id
-          LEFT JOIN subjects s ON s.id = fs.subject_id
           WHERE LOWER(fu.role) = 'faculty'
           GROUP BY fu.id
         )
         SELECT COUNT(*)::int AS total
         FROM faculty_view
-        WHERE ($1 = '' OR full_name ILIKE $1 OR faculty_id ILIKE $1 OR email ILIKE $1 OR departments ILIKE $1 OR subjects ILIKE $1)
+        WHERE ($2 = 0 OR department_ids LIKE '%' || $2 || '%')
       `,
-      countValues: [q],
+      countValues: [q, departmentId],
     });
 
     return res.json(response);
