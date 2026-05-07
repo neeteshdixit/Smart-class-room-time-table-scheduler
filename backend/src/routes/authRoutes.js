@@ -2,7 +2,7 @@ const express = require("express");
 const { body } = require("express-validator");
 const authController = require("../controllers/authController");
 const { validateRequest } = require("../utils/validation");
-const { optionalAuth } = require("../middleware/auth");
+const { authRequired, requireRoles, optionalAuth } = require("../middleware/auth");
 const { uploadProfilePhoto } = require("../middleware/upload");
 
 const router = express.Router();
@@ -89,5 +89,17 @@ router.post("/logout", optionalAuth, authController.logout);
 router.post("/forgot-password", forgotPasswordValidator, authController.forgotPassword);
 router.post("/verify-otp", verifyResetOtpValidator, authController.verifyOtp);
 router.post("/reset-password", resetPasswordValidator, authController.resetPassword);
+router.post(
+  "/delete-self-initiate",
+  authRequired,
+  requireRoles("ADMIN"),
+  authController.initiateAccountDelete
+);
+router.post(
+  "/delete-self-confirm",
+  authRequired,
+  requireRoles("ADMIN"),
+  authController.verifyAccountDelete
+);
 
 module.exports = router;
