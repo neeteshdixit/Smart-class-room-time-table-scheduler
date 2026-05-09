@@ -5,8 +5,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ["Poppins", "Inter", "sans-serif"],
-        body: ["Inter", "system-ui", "sans-serif"],
+        display: ["Poppins", "Inter", "Segoe UI", "Nirmala UI", "sans-serif"],
+        body: ["Inter", "Segoe UI", "Nirmala UI", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "SFMono-Regular", "monospace"],
       },
       boxShadow: {

@@ -98,6 +98,7 @@ function createAccessTokenForUser(user) {
       role: user.role,
       fullName: user.full_name,
       isMentor: Boolean(user.is_mentor),
+      sectionId: user.section_id || user.sectionId || (String(user.role).toLowerCase() === 'user' ? user.office_location : null)
     },
     getJwtSecret(),
     { expiresIn: getAccessTokenExpiresIn() }

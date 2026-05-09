@@ -1,102 +1,43 @@
 import React, { useEffect, useState } from "react";
 import { CalendarDays, Clock3, GraduationCap, MapPin, Sparkles, TimerReset } from "lucide-react";
-import { profileApi } from "../lib/api";
-import { formatDateTime, formatTime, initials, toTitleCase } from "../lib/format";
+import { profileApi, apiClient } from "../lib/api";
+import { formatDateTime, formatTime, initials } from "../lib/format";
 import { getRoleTheme } from "../lib/theme";
-import { Badge, Button, Card, EmptyState, SectionHeader, StatCard } from "../components/ui";
+import { Badge, Card, SectionHeader, StatCard } from "../components/ui";
 import { TimetableGrid, TimetableLegend, TimetableStatStrip } from "../components/timetable";
 import { useAuth } from "../context/AuthContext";
 
-const DEMO_STUDENT_CLASSES = [
-  {
-    id: 1,
-    day_of_week: 1,
-    slot_number: 1,
-    start_time: "09:00:00",
-    end_time: "09:50:00",
-    subject_name: "Software Engineering",
-    subject_code: "CS-501",
-    faculty_name: "Dr. Anita Rao",
-    room_number: "A-101",
-    section_name: "CSE-A",
-    session_mode: "Theory",
-  },
-  {
-    id: 2,
-    day_of_week: 1,
-    slot_number: 2,
-    start_time: "10:00:00",
-    end_time: "10:50:00",
-    subject_name: "Database Systems",
-    subject_code: "CS-503",
-    faculty_name: "Prof. Neil Mehta",
-    room_number: "Lab-2",
-    section_name: "CSE-A",
-    session_mode: "Practical",
-  },
-  {
-    id: 3,
-    day_of_week: 3,
-    slot_number: 3,
-    start_time: "11:00:00",
-    end_time: "11:50:00",
-    subject_name: "Operating Systems",
-    subject_code: "CS-504",
-    faculty_name: "Prof. R. Verma",
-    room_number: "B-204",
-    section_name: "CSE-A",
-    session_mode: "Theory",
-  },
-  {
-    id: 4,
-    day_of_week: 4,
-    slot_number: 4,
-    start_time: "02:00:00",
-    end_time: "02:50:00",
-    subject_name: "Project Lab",
-    subject_code: "CS-511",
-    faculty_name: "Dr. A. Sharma",
-    room_number: "Lab-4",
-    section_name: "CSE-A",
-    session_mode: "Practical",
-  },
-];
-
-function useStudentProfile() {
+function useStudentData() {
   const { user } = useAuth();
   const [profile, setProfile] = useState(user);
+  const [timetable, setTimetable] = useState([]);
+  const [timeSlots, setTimeSlots] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    let cancelled = false;
-
     async function load() {
-      setLoading(true);
-      setError("");
       try {
-        const response = await profileApi.get();
-        if (!cancelled) {
-          setProfile(response.profile || user);
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setProfile(user);
-          setError(loadError.message || "Unable to load profile");
-        }
+        const today = new Date().toISOString().split("T")[0];
+        const [profileRes, timetableRes, slotsRes] = await Promise.all([
+          profileApi.get(),
+          apiClient.get(`/student/my-timetable?date=${today}`),
+          apiClient.get("/master/time-slots"),
+        ]);
+        setProfile(profileRes.profile || user);
+        setTimetable(timetableRes.data || []);
+        setTimeSlots(slotsRes.data?.data || []);
+      } catch (err) {
+        setError(err.message);
+        setProfile(user);
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     }
-
     load();
-
-    return () => {
-      cancelled = true;
-    };
   }, [user]);
 
-  return { profile, loading, error };
+  return { profile, timetable, timeSlots, loading, error };
 }
 
 function StudentTodayCard({ item, isNext = false }) {
@@ -126,6 +67,9 @@ function StudentTodayCard({ item, isNext = false }) {
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-slate-400" />
           {item.faculty_name}
+          {item.is_substituted && (
+            <Badge tone="success" className="ml-2 scale-90">Substituted</Badge>
+          )}
         </div>
       </div>
     </div>
@@ -135,8 +79,11 @@ function StudentTodayCard({ item, isNext = false }) {
 export function StudentDashboardPage() {
   const { user } = useAuth();
   const theme = getRoleTheme("student");
-  const { profile, loading, error } = useStudentProfile();
-  const todayClasses = DEMO_STUDENT_CLASSES.slice(0, 2);
+  const { profile, timetable, timeSlots, loading, error } = useStudentData();
+  
+  // Logic to filter today's classes from the live timetable
+  const todayDayOfWeek = new Date().getDay() || 7; // Convert 0 (Sun) to 7
+  const todayClasses = timetable.filter(item => Number(item.day_of_week) === todayDayOfWeek);
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -150,7 +97,7 @@ export function StudentDashboardPage() {
         <StatCard icon={CalendarDays} label="Classes today" value={todayClasses.length} tone="student" />
         <StatCard icon={GraduationCap} label="Semester" value={profile?.semester || "—"} tone="info" />
         <StatCard icon={TimerReset} label="Section" value={profile?.section || profile?.role || "Student"} tone="warning" />
-        <StatCard icon={Sparkles} label="Classes this week" value={DEMO_STUDENT_CLASSES.length} tone="success" />
+        <StatCard icon={Sparkles} label="Classes this week" value={timetable.length} tone="success" />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
@@ -200,21 +147,21 @@ export function StudentDashboardPage() {
               <p className="text-xs uppercase tracking-[0.22em] text-slate-500">This week</p>
               <h3 className="mt-2 font-display text-xl font-semibold text-white">Compact calendar view</h3>
             </div>
-            <Badge tone="neutral">Mon-Fri</Badge>
+            <Badge tone="neutral">Mon-Sat</Badge>
           </div>
           <div className="mt-5">
             <TimetableGrid
-              entries={DEMO_STUDENT_CLASSES}
-              timeSlots={DEMO_STUDENT_CLASSES}
+              entries={timetable}
+              timeSlots={timeSlots}
               title="Student timetable"
-              subtitle="Preview grid with the same polished treatment as the backend-powered views"
+              subtitle="Live weekly schedule for your assigned section"
               compact
             />
           </div>
         </Card>
 
         <div className="space-y-6">
-          <TimetableLegend entries={DEMO_STUDENT_CLASSES} />
+          <TimetableLegend entries={timetable} />
           <Card className="p-5">
             <h3 className="font-display text-xl font-semibold text-white">Student notes</h3>
             <div className="mt-4 space-y-3 text-sm text-slate-300">
@@ -239,6 +186,10 @@ export function StudentDashboardPage() {
 }
 
 export function StudentTimetablePage() {
+  const { timetable, timeSlots, loading } = useStudentData();
+  
+  if (loading) return <div>Loading timetable...</div>;
+
   return (
     <div className="space-y-6">
       <SectionHeader
@@ -250,19 +201,19 @@ export function StudentTimetablePage() {
         <TimetableStatStrip
           stats={{
             sectionCount: 1,
-            subjectCount: DEMO_STUDENT_CLASSES.length,
-            roomCount: new Set(DEMO_STUDENT_CLASSES.map((item) => item.room_number)).size,
-            entryCount: DEMO_STUDENT_CLASSES.length,
+            subjectCount: new Set(timetable.map(item => item.subject_id)).size,
+            roomCount: new Set(timetable.map((item) => item.room_number)).size,
+            entryCount: timetable.length,
           }}
         />
       </Card>
       <TimetableGrid
-        entries={DEMO_STUDENT_CLASSES}
-        timeSlots={DEMO_STUDENT_CLASSES}
+        entries={timetable}
+        timeSlots={timeSlots}
         title="My timetable"
-        subtitle="Preview schedule for the student portal"
+        subtitle="Live schedule for the student portal"
       />
-      <TimetableLegend entries={DEMO_STUDENT_CLASSES} />
+      <TimetableLegend entries={timetable} />
     </div>
   );
 }

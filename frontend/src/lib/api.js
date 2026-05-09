@@ -241,6 +241,27 @@ export const facultyApi = {
   shareStudentTimetable: (payload) => client.post("/faculty/student-timetable/share", payload).then(unwrap),
 };
 
+export const absenceApi = {
+  markLeave: (payload) => client.post("/absence/leave", payload).then(unwrap),
+  getAffectedClasses: (params) => client.get("/absence/affected-classes", { params }).then(unwrap),
+  suggestSubstitutes: (params) => client.get("/absence/suggest-substitutes", { params }).then(unwrap),
+  assignSubstitution: (payload) => client.post("/absence/assign-substitution", payload).then(unwrap),
+};
+
+export const feedbackApi = {
+  submit: (payload) => client.post("/feedback", payload).then(unwrap),
+  analytics: (params = {}) => client.get("/feedback/analytics", { params }).then(unwrap),
+  trends: (params = {}) => client.get("/feedback/trends", { params }).then(unwrap),
+  issues: (params = {}) => client.get("/feedback/issues", { params }).then(unwrap),
+  markAsRead: (id) => client.patch(`/feedback/${id}/read`).then(unwrap),
+  unreadCount: () => client.get("/feedback/unread-count").then(unwrap),
+};
+
+export const aiApi = {
+  health: () => client.get("/ai/health").then(unwrap),
+  chat: (payload) => client.post("/ai/chat", payload).then(unwrap),
+};
+
 export function apiBaseUrl() {
   return BASE_URL;
 }

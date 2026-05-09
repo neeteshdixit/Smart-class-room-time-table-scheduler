@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { createTimetableMatrix, dayLabel, formatTimetableCell, getSlotLabel } from "../lib/timetable";
 import { Badge, Card } from "./ui";
 
-const DAY_KEYS = [1, 2, 3, 4, 5];
+const DAY_KEYS = [1, 2, 3, 4, 5, 6];
 
 function joinClasses(...parts) {
   return parts.filter(Boolean).join(" ");
@@ -67,14 +67,14 @@ export function TimetableGrid({ entries = [], timeSlots = [], title, subtitle, c
           </Badge>
           <Badge tone="neutral" className="border-0">
             <CalendarDays className="mr-1 h-3.5 w-3.5" />
-            Mon-Fri
+            Mon-Sat
           </Badge>
         </div>
       </div>
 
       <div className="overflow-x-auto">
         <div className="min-w-[980px]">
-          <div className="grid grid-cols-[110px_repeat(5,minmax(160px,1fr))] border-b border-white/8 bg-white/[0.02]">
+          <div className="grid grid-cols-[110px_repeat(6,minmax(160px,1fr))] border-b border-white/8 bg-white/[0.02]">
             <div className="px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
               Time
             </div>
@@ -94,7 +94,7 @@ export function TimetableGrid({ entries = [], timeSlots = [], title, subtitle, c
                 <div
                   key={row.slotNumber}
                   className={joinClasses(
-                    "grid grid-cols-[110px_repeat(5,minmax(160px,1fr))] items-stretch",
+                    "grid grid-cols-[110px_repeat(6,minmax(160px,1fr))] items-stretch",
                     compact ? "min-h-[86px]" : "min-h-[124px]"
                   )}
                 >

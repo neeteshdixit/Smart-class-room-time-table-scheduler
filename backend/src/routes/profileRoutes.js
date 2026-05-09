@@ -18,6 +18,27 @@ function buildRouteError(statusCode, message) {
 
 router.get("/", authRequired, async (req, res, next) => {
   try {
+    const role = String(req.user.role || "").toLowerCase();
+    
+    if (role === 'student') {
+      const result = await pool.query(
+        `SELECT s.id, s.student_id, s.full_name, s.email, s.section_id, sec.section_name as section, 
+                b.branch_name as branch, sem.semester_number as semester, s.created_at
+         FROM students s
+         LEFT JOIN sections sec ON s.section_id = sec.id
+         LEFT JOIN branches b ON sec.branch_id = b.id
+         LEFT JOIN semesters sem ON sec.semester_id = sem.id
+         WHERE s.id = $1`,
+        [req.user.userId]
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ message: "Student profile not found" });
+      }
+
+      return res.json({ profile: { ...result.rows[0], role: 'student' } });
+    }
+
     const result = await pool.query(
       `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, gender, dob,
               qualification, experience_years, address, joining_date, profile_photo_url, role,
@@ -59,6 +80,48 @@ router.put(
   ],
   async (req, res, next) => {
     try {
+      const role = String(req.user.role || "").toLowerCase();
+      
+      if (role === 'student') {
+        const allowedStudentFields = ["full_name", "email", "section_id"];
+        const updates = [];
+        const values = [];
+
+        allowedStudentFields.forEach((field) => {
+          if (req.body[field] !== undefined) {
+            values.push(field === "email" ? String(req.body[field]).toLowerCase() : req.body[field]);
+            updates.push(`${field} = $${values.length}`);
+          }
+        });
+
+        if (updates.length === 0) {
+          return res.status(400).json({ message: "No valid fields provided for update" });
+        }
+
+        const newEmail = req.body.email ? String(req.body.email).toLowerCase() : null;
+        if (newEmail) {
+          const conflictCheck = await pool.query(
+            "SELECT id FROM students WHERE id <> $1 AND email = $2 LIMIT 1",
+            [req.user.userId, newEmail]
+          );
+          if (conflictCheck.rowCount > 0) {
+            return res.status(409).json({ message: "Email is already in use" });
+          }
+        }
+
+        values.push(req.user.userId);
+        const result = await pool.query(
+          `UPDATE students
+           SET ${updates.join(", ")}
+           WHERE id = $${values.length}
+           RETURNING id, student_id, full_name, email, section_id`,
+          values
+        );
+        
+        await logActivity(req.user.userId, "Profile Updated", "Student profile details updated");
+        return res.json({ message: "Profile updated successfully", profile: { ...result.rows[0], role: 'student' } });
+      }
+
       const allowedFields = [
         "full_name",
         "department",

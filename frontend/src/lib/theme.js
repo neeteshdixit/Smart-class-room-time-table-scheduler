@@ -79,7 +79,9 @@ export const adminNav = [
   { label: "Summary", to: "/admin", icon: "layout-dashboard" },
   { label: "Master Data", to: "/admin/master-data", icon: "database" },
   { label: "Timetable", to: "/admin/timetable", icon: "calendar-range" },
+  { label: "Absence Management", to: "/admin/absences", icon: "user-x" },
   { label: "Reports", to: "/admin/reports", icon: "chart-column" },
+  { label: "Feedback", to: "/admin/feedback", icon: "message-square-text" },
   { label: "Activity Logs", to: "/admin/activity-logs", icon: "notebook-text" },
   { label: "Profile", to: "/profile", icon: "user-round" },
 ];
@@ -88,11 +90,13 @@ export const facultyNav = [
   { label: "Dashboard", to: "/faculty", icon: "layout-dashboard" },
   { label: "My Timetable", to: "/faculty/timetable", icon: "calendar-range" },
   { label: "Student Timetable", to: "/faculty/student-timetable", icon: "share-2" },
+  { label: "Feedback", to: "/feedback", icon: "message-square-text" },
   { label: "Profile", to: "/profile", icon: "user-round" },
 ];
 
 export const studentNav = [
   { label: "Dashboard", to: "/student", icon: "layout-dashboard" },
   { label: "Full Timetable", to: "/student/timetable", icon: "calendar-range" },
+  { label: "Feedback", to: "/feedback", icon: "message-square-text" },
   { label: "Profile", to: "/profile", icon: "user-round" },
 ];

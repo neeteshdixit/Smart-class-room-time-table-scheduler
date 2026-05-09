@@ -23,6 +23,11 @@ async function start() {
   try {
     await pool.query("SELECT 1");
     await initializeSchema(pool, { log: false });
+    
+    // Initialize Automated Reminders and Updates
+    const { initScheduler } = require("./src/services/schedulerService");
+    initScheduler();
+
     app.listen(PORT, () => {
       console.log(`Server running on http://localhost:${PORT}`);
     });

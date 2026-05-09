@@ -125,7 +125,15 @@ export function AuthProvider({ children }) {
     try {
       return await authApi.signup(payload);
     } catch (signupError) {
-      setError(signupError.message || "Unable to create account");
+      const backendError = signupError?.response?.data;
+      let errorMsg = backendError?.message || signupError.message || "Unable to create account";
+
+      if (backendError?.errors && Array.isArray(backendError.errors)) {
+        const details = backendError.errors.map((e) => `${e.path || e.param}: ${e.msg}`).join(", ");
+        errorMsg = `Validation failed: ${details}`;
+      }
+
+      setError(errorMsg);
       throw signupError;
     } finally {
       setIsBusy(false);

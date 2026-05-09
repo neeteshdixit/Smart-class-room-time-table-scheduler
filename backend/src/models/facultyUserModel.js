@@ -71,7 +71,7 @@ async function findByIdentifier(identifier) {
 
 async function findBasicById(id) {
   const result = await pool.query(
-    `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, role, is_mentor
+    `SELECT id, faculty_id, full_name, department, designation, email, mobile_number, role, is_mentor, office_location
      FROM faculty_users
      WHERE id = $1`,
     [id]

@@ -212,6 +212,8 @@ export function SignupPage() {
     department_names: "",
     subject_names: "",
     mentor_section_ids: "",
+    branch_id: "",
+    semester_id: "",
   });
   const [adminExists, setAdminExists] = useState(false);
 

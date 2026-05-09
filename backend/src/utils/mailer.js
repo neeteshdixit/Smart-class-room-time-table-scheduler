@@ -241,6 +241,32 @@ async function sendTimetableSharedEmails(recipients, payload = {}) {
   }));
 }
 
+async function sendFeedbackAlertEmail(recipients, payload = {}) {
+  const subject = `[Feedback Alert] New ${payload.urgency || "Neutral"} feedback submitted`;
+  const textLines = [
+    "A new feedback entry has been submitted and analyzed by AI.",
+    "",
+    `Sender: ${payload.senderName} (${payload.role})`,
+    `Sentiment: ${payload.sentiment}`,
+    `Emotion: ${payload.emotion}`,
+    `Category: ${payload.category}`,
+    `Urgency: ${payload.urgency}`,
+    "",
+    "Feedback Text:",
+    payload.feedbackText,
+    "",
+    "AI Recommendation:",
+    payload.aiRecommendation,
+    "",
+    `View in Dashboard: ${payload.dashboardUrl || "the admin portal"}`,
+  ].filter((l) => l !== undefined);
+
+  return sendBulkEmail(recipients, () => ({
+    subject,
+    text: textLines.join("\n"),
+  }));
+}
+
 async function sendAccountDeleteOtpEmail(email, otpCode, expiryMinutes = 2) {
   const safeExpiry = Number.isInteger(Number(expiryMinutes)) && Number(expiryMinutes) > 0 ? Number(expiryMinutes) : 2;
   await sendEmail({
@@ -259,4 +285,5 @@ module.exports = {
   sendAccountDeleteOtpEmail,
   sendTimetableGeneratedEmails,
   sendTimetableSharedEmails,
+  sendFeedbackAlertEmail,
 };

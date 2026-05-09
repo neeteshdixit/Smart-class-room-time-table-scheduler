@@ -399,6 +399,21 @@ async function signup(payload, actorUser = null, uploadedFile = null, options = 
     await addFacultyUserSubjects(user.id, resolvedSubjectIds, client);
     await addSectionMentorMappings(user.id, resolvedMentorSectionIds, client);
 
+    if (role === ROLE_USER) {
+      const studentSectionId = Number.parseInt(payload.office_location, 10);
+      await client.query(
+        `INSERT INTO students (student_id, full_name, email, password_hash, section_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          payload.faculty_id,
+          payload.full_name,
+          payload.email.toLowerCase(),
+          passwordHash,
+          Number.isInteger(studentSectionId) ? studentSectionId : null,
+        ]
+      );
+    }
+
     await client.query("COMMIT");
     await logActivity(
       user.id,
@@ -869,13 +884,13 @@ async function verifyAccountDelete(userId, payload) {
       message: "Account deleted successfully. You have been logged out.",
       deleted_user: deleted,
     };
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-    consumeAccountDeleteOtp(user.email);
-  }
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+      consumeAccountDeleteOtp(user.email);
+    }
 }
 
 module.exports = {

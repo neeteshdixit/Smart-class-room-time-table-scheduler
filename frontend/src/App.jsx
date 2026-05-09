@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { AppShell } from "./components/layout";
 import PageTransition from "./components/PageTransition";
+import AIChatbot from "./components/AIChatbot";
 import { useAuth } from "./context/AuthContext";
 import { roleToPath } from "./lib/theme";
 import {
@@ -21,12 +22,15 @@ const AdminDashboardPage = lazyNamed(() => import("./pages/AdminPages"), "AdminD
 const MasterDataPage = lazyNamed(() => import("./pages/AdminPages"), "MasterDataPage");
 const TimetablePage = lazyNamed(() => import("./pages/AdminPages"), "TimetablePage");
 const ReportsPage = lazyNamed(() => import("./pages/AdminPages"), "ReportsPage");
+const AbsenceManagementPage = lazyNamed(() => import("./pages/AdminPages"), "AbsenceManagementPage");
 const ActivityLogsPage = lazyNamed(() => import("./pages/AdminPages"), "ActivityLogsPage");
+const FeedbackPage = lazyNamed(() => import("./pages/FeedbackPage"), "FeedbackPage");
 const FacultyDashboardPage = lazyNamed(() => import("./pages/FacultyPages"), "FacultyDashboardPage");
 const FacultyTimetablePage = lazyNamed(() => import("./pages/FacultyPages"), "FacultyTimetablePage");
 const FacultyStudentTimetablePage = lazyNamed(() => import("./pages/FacultyPages"), "FacultyStudentTimetablePage");
 const StudentDashboardPage = lazyNamed(() => import("./pages/StudentPages"), "StudentDashboardPage");
 const StudentTimetablePage = lazyNamed(() => import("./pages/StudentPages"), "StudentTimetablePage");
+const FacultyAnalyticsPage = lazy(() => import("./pages/FacultyAnalytics"));
 const ProfilePage = lazyNamed(() => import("./pages/ProfilePage"), "ProfilePage");
 const NotFoundPage = lazyNamed(() => import("./pages/NotFoundPage"), "NotFoundPage");
 
@@ -112,12 +116,17 @@ function AuthenticatedRoutes() {
           <Route path="/admin" element={<ProtectedRoute roles={["admin"]}><PageTransition><AdminDashboardPage /></PageTransition></ProtectedRoute>} />
           <Route path="/admin/master-data" element={<ProtectedRoute roles={["admin"]}><PageTransition><MasterDataPage /></PageTransition></ProtectedRoute>} />
           <Route path="/admin/timetable" element={<ProtectedRoute roles={["admin"]}><PageTransition><TimetablePage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/absences" element={<ProtectedRoute roles={["admin"]}><PageTransition><AbsenceManagementPage /></PageTransition></ProtectedRoute>} />
           <Route path="/admin/reports" element={<ProtectedRoute roles={["admin"]}><PageTransition><ReportsPage /></PageTransition></ProtectedRoute>} />
           <Route path="/admin/activity-logs" element={<ProtectedRoute roles={["admin"]}><PageTransition><ActivityLogsPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/feedback" element={<ProtectedRoute roles={["admin"]}><PageTransition><FeedbackPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/admin/analytics" element={<ProtectedRoute roles={["admin"]}><PageTransition><FacultyAnalyticsPage /></PageTransition></ProtectedRoute>} />
+          <Route path="/feedback" element={<ProtectedRoute roles={["admin", "faculty", "student", "user"]}><PageTransition><FeedbackPage /></PageTransition></ProtectedRoute>} />
 
           <Route path="/faculty" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyDashboardPage /></PageTransition></ProtectedRoute>} />
           <Route path="/faculty/timetable" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyTimetablePage /></PageTransition></ProtectedRoute>} />
           <Route path="/faculty/student-timetable" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyStudentTimetablePage /></PageTransition></ProtectedRoute>} />
+          <Route path="/faculty/analytics" element={<ProtectedRoute roles={["faculty"]}><PageTransition><FacultyAnalyticsPage /></PageTransition></ProtectedRoute>} />
 
           <Route path="/student" element={<ProtectedRoute roles={["student", "user"]}><PageTransition><StudentDashboardPage /></PageTransition></ProtectedRoute>} />
           <Route path="/student/timetable" element={<ProtectedRoute roles={["student", "user"]}><PageTransition><StudentTimetablePage /></PageTransition></ProtectedRoute>} />
@@ -127,6 +136,7 @@ function AuthenticatedRoutes() {
           <Route path="*" element={<PageTransition><NotFoundPage /></PageTransition>} />
         </Routes>
       </AnimatePresence>
+      <AIChatbot />
     </AppShell>
   );
 }

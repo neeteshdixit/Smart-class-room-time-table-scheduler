@@ -800,3 +800,216 @@ CREATE INDEX IF NOT EXISTS idx_timetable_history_created_at ON timetable_history
 CREATE INDEX IF NOT EXISTS idx_recent_activity_created_at ON recent_activity(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_section_mentors_faculty_id ON section_mentors(faculty_id);
 CREATE INDEX IF NOT EXISTS idx_section_mentors_section_id ON section_mentors(section_id);
+
+-- ==========================================
+-- AI & SMART AUTOMATION ENHANCEMENTS
+-- ==========================================
+
+-- Enhanced Schedule Configuration
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'department_schedule_config' AND column_name = 'lecture_duration_minutes'
+    ) THEN
+        ALTER TABLE department_schedule_config ADD COLUMN lecture_duration_minutes INTEGER DEFAULT 50;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'department_schedule_config' AND column_name = 'lab_duration_minutes'
+    ) THEN
+        ALTER TABLE department_schedule_config ADD COLUMN lab_duration_minutes INTEGER DEFAULT 100;
+    END IF;
+END $$;
+
+-- Student Module
+CREATE TABLE IF NOT EXISTS students (
+    id SERIAL PRIMARY KEY,
+    student_id VARCHAR(50) UNIQUE NOT NULL,
+    full_name VARCHAR(120) NOT NULL,
+    email VARCHAR(120) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    section_id INTEGER REFERENCES sections(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login TIMESTAMPTZ
+);
+
+-- Faculty Absence & Leave Management
+CREATE TABLE IF NOT EXISTS faculty_leaves (
+    id SERIAL PRIMARY KEY,
+    faculty_user_id INTEGER NOT NULL REFERENCES faculty_users(id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    reason TEXT,
+    status VARCHAR(20) DEFAULT 'Pending' CHECK (status IN ('Pending', 'Approved', 'Rejected')),
+    urgency VARCHAR(20) DEFAULT 'Normal',
+    ai_extracted_metadata JSONB, -- Stores extracted intent, dates, urgency from emails
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Intelligent Substitutions
+CREATE TABLE IF NOT EXISTS timetable_substitutions (
+    id SERIAL PRIMARY KEY,
+    original_entry_id INTEGER NOT NULL REFERENCES timetable_entries(id) ON DELETE CASCADE,
+    substitute_faculty_id INTEGER NOT NULL REFERENCES faculty(id) ON DELETE CASCADE,
+    substitution_date DATE NOT NULL,
+    status VARCHAR(20) DEFAULT 'Pending' CHECK (status IN ('Pending', 'Approved', 'Cancelled')),
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Agentic Chat History
+CREATE TABLE IF NOT EXISTS chat_history (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER, -- Reference id (could be faculty or student)
+    message TEXT NOT NULL,
+    response TEXT NOT NULL,
+    language VARCHAR(20),
+    role VARCHAR(20),
+    context_metadata JSONB, -- Stores RAG context or intent
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Smart Notification Engine
+CREATE TABLE IF NOT EXISTS notifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES faculty_users(id) ON DELETE CASCADE,
+    student_id INTEGER REFERENCES students(id) ON DELETE CASCADE,
+    title VARCHAR(200) NOT NULL,
+    message TEXT NOT NULL,
+    type VARCHAR(50) NOT NULL, -- 'TIMETABLE_UPDATE', 'SUBSTITUTION', 'LEAVE_ALERT', 'REMINDER'
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexing for AI Queries
+CREATE INDEX IF NOT EXISTS idx_faculty_leaves_dates ON faculty_leaves(start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_substitutions_date ON timetable_substitutions(substitution_date);
+CREATE INDEX IF NOT EXISTS idx_chat_history_user ON chat_history(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_student ON notifications(student_id);
+
+-- Feedback Intelligence
+CREATE TABLE IF NOT EXISTS feedbacks (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL, -- Polymorphic: can be faculty_users.id or students.id
+    role VARCHAR(20) NOT NULL CHECK (LOWER(role) IN ('admin', 'faculty', 'user')),
+    feedback_text TEXT NOT NULL,
+    sentiment VARCHAR(20) NOT NULL CHECK (LOWER(sentiment) IN ('positive', 'negative', 'neutral')),
+    emotion VARCHAR(30) NOT NULL CHECK (LOWER(emotion) IN ('frustration', 'stress', 'satisfaction', 'confusion', 'appreciation', 'concern', 'neutral')),
+    category VARCHAR(120) NOT NULL,
+    urgency VARCHAR(20) NOT NULL CHECK (LOWER(urgency) IN ('low', 'medium', 'high')),
+    ai_recommendation TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = 'feedbacks'
+    ) THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'user_id'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN user_id INTEGER;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'role'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN role VARCHAR(20);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'feedback_text'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN feedback_text TEXT;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'sentiment'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN sentiment VARCHAR(20);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'emotion'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN emotion VARCHAR(30);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'category'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN category VARCHAR(120);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'urgency'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN urgency VARCHAR(20);
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'ai_recommendation'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN ai_recommendation TEXT;
+        END IF;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'feedbacks'
+              AND column_name = 'created_at'
+        ) THEN
+            ALTER TABLE feedbacks
+            ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        END IF;
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_feedbacks_created_at ON feedbacks(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_user_id ON feedbacks(user_id);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_role ON feedbacks(role);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_sentiment ON feedbacks(sentiment);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_category ON feedbacks(category);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_urgency ON feedbacks(urgency);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_role_created_at ON feedbacks(role, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_category_created_at ON feedbacks(category, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedbacks_sentiment_created_at ON feedbacks(sentiment, created_at DESC);

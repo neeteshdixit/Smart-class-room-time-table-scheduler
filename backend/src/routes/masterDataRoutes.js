@@ -1,6 +1,6 @@
 const express = require("express");
 const pool = require("../config/db");
-const { authRequired, requireRoles } = require("../middleware/auth");
+const { authRequired, requireRoles, optionalAuth } = require("../middleware/auth");
 const { logActivity } = require("../utils/activity");
 
 const router = express.Router();
@@ -156,6 +156,11 @@ const resourceConfig = {
     fields: ["department_id", "day_of_week", "start_time", "end_time", "slot_number"],
     required: ["day_of_week", "start_time", "end_time", "slot_number"],
   },
+  students: {
+    table: "students",
+    fields: ["student_id", "full_name", "email", "section_id"],
+    required: ["student_id", "full_name", "email"],
+  },
 };
 
 function getConfig(resource) {
@@ -166,12 +171,20 @@ function isManualTimeSlotResource(resource) {
   return resource === "time-slots";
 }
 
-router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, next) => {
+router.get("/:resource", optionalAuth, async (req, res, next) => {
   try {
     const { resource } = req.params;
     const config = getConfig(resource);
     if (!config) {
       return res.status(404).json({ message: "Unknown resource" });
+    }
+
+    // List of resources that can be viewed without admin privileges (e.g., during signup)
+    const publicResources = ["departments", "branches", "semesters", "sections", "subjects", "time-slots"];
+    const isAdmin = req.user && String(req.user.role).toLowerCase() === "admin";
+
+    if (!publicResources.includes(resource) && !isAdmin) {
+      return res.status(403).json({ message: "Admin access required for this resource" });
     }
 
     const page = Math.max(1, Number(req.query.page) || 1);
@@ -192,7 +205,12 @@ router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, n
 
     // Support search across text fields
     if (q) {
-      const searchFields = config.fields.filter(f => f.includes('name') || f.includes('code') || f.includes('email'));
+      const searchFields = config.fields.filter(f => 
+        f.includes('name') || 
+        f.includes('code') || 
+        f.includes('email') || 
+        f.endsWith('_id') && !f.includes('department') && !f.includes('branch') && !f.includes('semester') && !f.includes('section') && !f.includes('block')
+      );
       if (searchFields.length > 0) {
         const searchClause = searchFields.map(f => `LOWER(${f}) LIKE $${queryValues.length + 1}`).join(" OR ");
         whereClauses.push(`(${searchClause})`);
@@ -202,15 +220,20 @@ router.get("/:resource", authRequired, requireRoles("admin"), async (req, res, n
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
+    let selectSql = `SELECT * FROM ${config.table}`;
+    if (resource === 'students') {
+      selectSql = `SELECT s.*, sec.section_name FROM students s LEFT JOIN sections sec ON s.section_id = sec.id`;
+    }
+
     const countResult = await pool.query(
       `SELECT COUNT(*)::int AS total FROM ${config.table} ${whereSql}`,
       queryValues
     );
 
     const result = await pool.query(
-      `SELECT * FROM ${config.table}
-       ${whereSql}
-       ORDER BY id DESC
+      `${selectSql}
+       ${whereSql.replace(/section_id/g, 's.section_id')}
+       ORDER BY ${resource === 'students' ? 's.id' : 'id'} DESC
        LIMIT $${queryValues.length + 1} OFFSET $${queryValues.length + 2}`,
       [...queryValues, limit, offset]
     );

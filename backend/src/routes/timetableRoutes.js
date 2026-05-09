@@ -1418,10 +1418,15 @@ async function generateTimetableHandler(req, res, next) {
       selfStudyFacultyPool.map((faculty) => Number(faculty.id)).filter((id) => Number.isInteger(id) && id > 0)
     );
 
+    const excludedFacultyIds = Array.isArray(req.body.excluded_faculty_ids)
+      ? req.body.excluded_faculty_ids.map(id => Number(id))
+      : [];
+
     departmentFacultyResult.rows.forEach((row) => {
       const facultyId = Number(row.id);
       if (!Number.isInteger(facultyId) || facultyId <= 0) return;
       if (facultyWorkloadMap.has(facultyId)) return;
+      if (excludedFacultyIds.includes(facultyId)) return;
 
       const isFallback = selfStudyFacultyIdSet.has(facultyId) || String(row.faculty_id || "").startsWith(SYSTEM_FACULTY_ID_PREFIX);
       facultyWorkloadMap.set(facultyId, {
@@ -1445,7 +1450,7 @@ async function generateTimetableHandler(req, res, next) {
       const workloadLimit = Math.max(DEFAULT_MAX_WORKLOAD_PER_WEEK, asNonNegativeInteger(row.max_workload_per_week, DEFAULT_MAX_WORKLOAD_PER_WEEK));
       const facultyDepartmentId = asNonNegativeInteger(row.faculty_department_id, 0);
 
-      if (!resolvedFacultyId) {
+      if (!resolvedFacultyId || excludedFacultyIds.includes(resolvedFacultyId)) {
         addIssue(issues, "missing_faculty_mapping", String(row.subject_name || `Subject#${subjectId}`));
         return;
       }
@@ -1482,7 +1487,7 @@ async function generateTimetableHandler(req, res, next) {
         faculty_name: String(row.full_name || `Faculty#${row.id}`).trim(),
         is_fallback: selfStudyFacultyIdSet.has(Number(row.id)) || String(row.faculty_id || "").startsWith(SYSTEM_FACULTY_ID_PREFIX),
       }))
-      .filter((candidate) => Number.isInteger(candidate.faculty_id) && candidate.faculty_id > 0);
+      .filter((candidate) => Number.isInteger(candidate.faculty_id) && candidate.faculty_id > 0 && !excludedFacultyIds.includes(candidate.faculty_id));
     const primaryDepartmentFacultyCandidates = departmentFacultyCandidates.filter((candidate) => !candidate.is_fallback);
     const backupDepartmentFacultyCandidates =
       primaryDepartmentFacultyCandidates.length > 0 ? primaryDepartmentFacultyCandidates : departmentFacultyCandidates;

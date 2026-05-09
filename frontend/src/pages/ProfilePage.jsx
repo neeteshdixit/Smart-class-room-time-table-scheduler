@@ -8,7 +8,7 @@ import { Badge, Button, Card, Input, SectionHeader, Modal, OtpInputs, Select } f
 import { SmartSelect } from "../components/SmartSelect";
 import { useAuth } from "../context/AuthContext";
 
-const EDITABLE_FIELDS = [
+const FACULTY_FIELDS = [
   { name: "full_name", label: "Full name", type: "text" },
   { name: "email", label: "Email", type: "email" },
   { name: "mobile_number", label: "Mobile number", type: "text" },
@@ -23,9 +23,23 @@ const EDITABLE_FIELDS = [
   { name: "office_location", label: "Office location", type: "text" },
 ];
 
-function toForm(profile) {
+const STUDENT_FIELDS = [
+  { name: "full_name", label: "Full name", type: "text" },
+  { name: "email", label: "Email", type: "email" },
+  { name: "student_id", label: "Student ID", type: "text", disabled: true },
+  { name: "section_id", label: "Section", type: "smart-select", resource: "sections" },
+];
+
+function getFieldsForRole(role) {
+  const normalized = String(role || "student").trim().toLowerCase();
+  if (normalized === "student" || normalized === "user") return STUDENT_FIELDS;
+  return FACULTY_FIELDS;
+}
+
+function toForm(profile, role) {
+  const fields = getFieldsForRole(role);
   const form = {};
-  EDITABLE_FIELDS.forEach((field) => {
+  fields.forEach((field) => {
     form[field.name] = profile?.[field.name] ?? "";
   });
   return form;
@@ -33,8 +47,10 @@ function toForm(profile) {
 
 export function ProfilePage() {
   const { user, role, updateProfile, updateProfilePhoto, initiateAccountDelete, confirmAccountDelete, logout } = useAuth();
+  const activeRole = role || user?.role || "student";
+  const fields = getFieldsForRole(activeRole);
   const [profile, setProfile] = useState(user || null);
-  const [form, setForm] = useState(() => toForm(user));
+  const [form, setForm] = useState(() => toForm(user, activeRole));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -43,8 +59,8 @@ export function ProfilePage() {
   const [deleteModal, setDeleteModal] = useState({ open: false, step: "auth", password: "", otp: "" });
   const fileInputRef = useRef(null);
   
-  const theme = getRoleTheme(role || user?.role || "student");
-  const isAdmin = (role || user?.role || "").toLowerCase() === "admin";
+  const theme = getRoleTheme(activeRole);
+  const isAdmin = activeRole.toLowerCase() === "admin";
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +71,7 @@ export function ProfilePage() {
         if (cancelled) return;
         const nextProfile = response.profile || user || null;
         setProfile(nextProfile);
-        setForm(toForm(nextProfile));
+        setForm(toForm(nextProfile, activeRole));
       } catch (loadError) {
         if (!cancelled) setError(loadError.message || "Unable to load profile");
       } finally {
@@ -64,7 +80,7 @@ export function ProfilePage() {
     }
     load();
     return () => { cancelled = true; };
-  }, [user]);
+  }, [user, activeRole]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -73,7 +89,8 @@ export function ProfilePage() {
     setError("");
     try {
       const payload = {};
-      EDITABLE_FIELDS.forEach((field) => {
+      fields.forEach((field) => {
+        if (field.disabled) return;
         const value = form[field.name];
         if (field.type === "number") {
           payload[field.name] = value === "" ? null : Number(value);
@@ -181,8 +198,8 @@ export function ProfilePage() {
 
             <div className="mt-8 grid grid-cols-2 gap-3">
               <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/5">
-                <p className="text-[10px] uppercase tracking-widest text-slate-500">ID</p>
-                <p className="mt-1 text-sm font-semibold text-slate-200">{profile?.faculty_id || "—"}</p>
+                <p className="text-[10px] uppercase tracking-widest text-slate-500">{activeRole === 'student' ? 'Student ID' : 'Faculty ID'}</p>
+                <p className="mt-1 text-sm font-semibold text-slate-200">{profile?.student_id || profile?.faculty_id || "—"}</p>
               </div>
               <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/5">
                 <p className="text-[10px] uppercase tracking-widest text-slate-500">Joined</p>
@@ -237,7 +254,7 @@ export function ProfilePage() {
           />
 
           <form className="grid gap-5 md:grid-cols-2" onSubmit={handleSubmit}>
-            {EDITABLE_FIELDS.map((field) => {
+            {fields.map((field) => {
               if (field.type === "smart-select") {
                 return (
                   <SmartSelect
@@ -272,6 +289,7 @@ export function ProfilePage() {
                   label={field.label}
                   type={field.type}
                   step={field.step}
+                  disabled={field.disabled}
                   value={form[field.name] || ""}
                   onChange={(event) => setForm((current) => ({ ...current, [field.name]: event.target.value }))}
                   accent={isAdmin ? "#ef4444" : "#3b82f6"}

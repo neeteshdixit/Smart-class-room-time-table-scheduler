@@ -20,6 +20,8 @@ import {
   Clock3,
   Blocks,
   DoorOpen,
+  GraduationCap,
+  MessageSquareText,
 } from "lucide-react";
 import {
   Bar,
@@ -32,7 +34,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { dashboardApi, masterApi, statsApi } from "../lib/api";
+import { dashboardApi, masterApi, statsApi, absenceApi, feedbackApi } from "../lib/api";
 import { formatDateTime, formatNumber, formatPercent } from "../lib/format";
 import { summarizeTimetable } from "../lib/timetable";
 import { adminNav } from "../lib/theme";
@@ -53,6 +55,14 @@ import { DeleteConfirmationModal } from "../components/ui";
 import { WorkingDaySelector } from "../components/WorkingDaySelector";
 import { SmartSelect } from "../components/SmartSelect";
 import { FormSkeleton, GridSkeleton } from "../components/FormSkeletons";
+
+function titleCase(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
 
 const MASTER_RESOURCES = {
   departments: {
@@ -223,6 +233,23 @@ const MASTER_RESOURCES = {
       { key: "equipment_type", label: "Equipment" },
     ],
   },
+  students: {
+    title: "Students",
+    description: "Student records for personalized timetable access.",
+    icon: GraduationCap,
+    fields: [
+      { name: "student_id", label: "Student ID", type: "text", required: true },
+      { name: "full_name", label: "Full name", type: "text", required: true },
+      { name: "email", label: "Email", type: "email", required: true },
+      { name: "section_id", label: "Section", type: "smart-select", resource: "sections", required: true },
+    ],
+    columns: [
+      { key: "student_id", label: "ID" },
+      { key: "full_name", label: "Name" },
+      { key: "email", label: "Email" },
+      { key: "section_name", label: "Section" },
+    ],
+  },
 };
 
 function toInitialForm(resource) {
@@ -387,6 +414,10 @@ export function AdminDashboardPage() {
     queryKey: ["stats", { includeActivity: true }],
     queryFn: () => statsApi.get(true),
   });
+  const { data: feedbackSummary, isLoading: feedbackLoading, error: feedbackQueryError } = useQuery({
+    queryKey: ["feedbackAnalytics", "admin-dashboard"],
+    queryFn: () => feedbackApi.analytics({ range: "30d" }),
+  });
 
   if (loading) {
     return (
@@ -401,6 +432,10 @@ export function AdminDashboardPage() {
 
   const error = queryError?.message || "";
   const recentActivity = summary?.recent_activity || [];
+  const feedbackTotals = feedbackSummary?.totals || {};
+  const feedbackSentiment = feedbackSummary?.sentiment || {};
+  const feedbackTopIssue = feedbackSummary?.top_issues?.[0];
+  const feedbackInsights = feedbackSummary?.ai_insights || {};
 
   return (
     <div className="space-y-6">
@@ -429,11 +464,29 @@ export function AdminDashboardPage() {
         </Card>
       ) : null}
 
+      {feedbackQueryError ? (
+        <Card className="border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-100">
+          {feedbackQueryError.message || "Unable to load feedback analytics"}
+        </Card>
+      ) : null}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <StatCard icon={Database} label="Departments" value={summary?.totals?.departments ?? 0} tone="admin" />
         <StatCard icon={CalendarRange} label="Timetable versions" value={summary?.totals?.timetable_versions ?? 0} tone="warning" />
         <StatCard icon={Settings2} label="Faculty records" value={summary?.totals?.faculty ?? 0} tone="success" />
         <StatCard icon={Activity} label="Average workload" value={summary?.metrics?.average_faculty_workload ?? 0} tone="info" />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard icon={MessageSquareText} label="Total feedback" value={feedbackTotals.total ?? 0} tone="admin" />
+        <StatCard
+          icon={TriangleAlert}
+          label="Negative sentiment"
+          value={feedbackLoading ? "..." : formatPercent(feedbackSentiment.negative_pct || 0)}
+          tone="danger"
+        />
+        <StatCard icon={Clock3} label="High urgency" value={feedbackTotals.high_urgency ?? 0} tone="warning" />
+        <StatCard icon={Sparkles} label="Timetable satisfaction" value={`${feedbackSummary?.timetable_satisfaction_score ?? 100}%`} tone="success" />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
@@ -498,6 +551,100 @@ export function AdminDashboardPage() {
               <span className="text-sm text-slate-300">Active sections</span>
               <span className="text-sm font-semibold text-white">{formatNumber(summary?.totals?.sections || 0)}</span>
             </div>
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+        <Card className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Feedback overview</p>
+              <h3 className="mt-2 font-display text-xl font-semibold text-white">Live sentiment + issue pulse</h3>
+            </div>
+            <Button variant="secondary" asChild>
+              <Link className="inline-flex items-center gap-2" to="/admin/feedback">
+                Open feedback hub
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </Button>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-2xl bg-white/[0.03] p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Top issue</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {feedbackTopIssue ? titleCase(feedbackTopIssue.category) : "No dominant issue yet"}
+              </p>
+              <p className="mt-2 text-sm text-slate-400">
+                {feedbackTopIssue ? `${feedbackTopIssue.count} reports in the selected window.` : "Collect a few more entries to establish a clear trend."}
+              </p>
+            </div>
+            <div className="rounded-2xl bg-white/[0.03] p-4">
+              <p className="text-xs uppercase tracking-[0.18em] text-slate-400">AI headline</p>
+              <p className="mt-2 text-lg font-semibold text-white">
+                {feedbackInsights.headline || "AI insights will appear here after feedback is analyzed."}
+              </p>
+              <p className="mt-2 text-sm text-slate-400">
+                {feedbackSummary?.timetable_satisfaction_score ?? 100}% timetable satisfaction in the current rolling window.
+              </p>
+            </div>
+          </div>
+          <div className="mt-5 space-y-3">
+            {(feedbackInsights.insights || []).length ? (
+              feedbackInsights.insights.slice(0, 3).map((line) => (
+                <div key={line} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-cyan-500/15 text-cyan-300">
+                    <Sparkles className="h-4.5 w-4.5" />
+                  </div>
+                  <div>
+                    <p className="text-sm leading-6 text-slate-100">{line}</p>
+                  </div>
+                </div>
+              ))
+            ) : feedbackLoading ? (
+              <div className="space-y-3">
+                <div className="h-16 animate-pulse rounded-2xl bg-white/5" />
+                <div className="h-16 animate-pulse rounded-2xl bg-white/5" />
+              </div>
+            ) : (
+              <EmptyState
+                title="No feedback insights yet"
+                description="Once feedback starts flowing, this panel will highlight sentiment shifts and workload stress."
+              />
+            )}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="font-display text-xl font-semibold text-white">Recent feedback pulses</h3>
+            <Badge tone="neutral">{(feedbackSummary?.recent_feedback || []).length} items</Badge>
+          </div>
+          <div className="mt-4 space-y-3">
+            {(feedbackSummary?.recent_feedback || []).length ? (
+              feedbackSummary.recent_feedback.slice(0, 4).map((item) => (
+                <div key={item.id} className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={item.sentiment === "negative" ? "danger" : item.sentiment === "positive" ? "success" : "info"} className="capitalize">
+                      {item.sentiment}
+                    </Badge>
+                    <Badge tone={item.urgency === "high" ? "danger" : item.urgency === "medium" ? "warning" : "success"} className="capitalize">
+                      {item.urgency}
+                    </Badge>
+                    <span className="text-xs uppercase tracking-[0.18em] text-slate-500">{formatDateTime(item.created_at)}</span>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-slate-100">{item.feedback_text}</p>
+                  <p className="mt-3 text-sm text-slate-400">
+                    Recommendation: {item.ai_recommendation}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <EmptyState
+                title="No feedback records yet"
+                description="The latest feedback submissions will appear here once users start sending them in."
+              />
+            )}
           </div>
         </Card>
       </div>
@@ -574,6 +721,7 @@ export function MasterDataPage() {
     "faculty",
     "subjects",
     "semesters",
+    "students",
   ].map((key) => [key, MASTER_RESOURCES[key]]).filter(([, item]) => Boolean(item));
   const [resource, setResource] = useState(resourceEntries[0][0]);
   const {
@@ -1696,6 +1844,200 @@ export function ActivityLogsPage() {
             Next
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+export function AbsenceManagementPage() {
+  const [facultyId, setFacultyId] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [affectedClasses, setAffectedClasses] = useState([]);
+  const [substitutes, setSubstitutes] = useState({}); // entryId -> list of substitutes
+  const [selectedSubstitutes, setSelectedSubstitutes] = useState({}); // entryId -> selected subId
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const queryClient = useQueryClient();
+
+  const handleFetchAffected = async () => {
+    if (!facultyId || !date) return;
+    setIsLoading(true);
+    setMessage(null);
+    try {
+      const classes = await absenceApi.getAffectedClasses({ faculty_id: facultyId, date });
+      setAffectedClasses(classes);
+      
+      // For each class, fetch potential substitutes
+      const subPromises = classes.map(async (cls) => {
+        const subs = await absenceApi.suggestSubstitutes({ entry_id: cls.id, date });
+        return { entryId: cls.id, subs };
+      });
+      
+      const subResults = await Promise.all(subPromises);
+      const subMap = {};
+      subResults.forEach(res => {
+        subMap[res.entryId] = res.subs;
+      });
+      setSubstitutes(subMap);
+    } catch (err) {
+      setMessage({ type: "error", text: err.message || "Failed to fetch classes" });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAssignSubstitution = async (entryId) => {
+    const subId = selectedSubstitutes[entryId];
+    if (!subId) return;
+    
+    try {
+      await absenceApi.assignSubstitution({
+        original_entry_id: entryId,
+        substitute_faculty_id: subId,
+        substitution_date: date,
+        reason: "Faculty Absence"
+      });
+      // Mark as assigned locally
+      setAffectedClasses(prev => prev.map(c => c.id === entryId ? { ...c, assigned: true } : c));
+    } catch (err) {
+      alert("Failed to assign: " + err.message);
+    }
+  };
+
+  const handleMarkAbsent = async () => {
+    if (!facultyId || !date) return;
+    setIsSaving(true);
+    try {
+      await absenceApi.markLeave({
+        faculty_id: facultyId,
+        start_date: date,
+        end_date: date,
+        reason: "Absent"
+      });
+      setMessage({ type: "success", text: "Faculty marked absent and leave recorded." });
+    } catch (err) {
+      setMessage({ type: "error", text: err.message || "Failed to mark absent" });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <SectionHeader
+        eyebrow="Operations"
+        title="Faculty Absence & Substitutions"
+        description="Mark faculty as absent and find available substitutes for their classes to ensure continuity."
+      />
+
+      <div className="grid gap-6 xl:grid-cols-[400px_1fr]">
+        <Card className="p-5 space-y-4">
+          <h3 className="text-lg font-semibold text-white">Entry Details</h3>
+          <SmartSelect
+            label="Faculty"
+            resource="faculty"
+            value={facultyId}
+            onChange={setFacultyId}
+            required
+          />
+          <Input
+            label="Date of Absence"
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            required
+          />
+          <Button 
+            variant="primary" 
+            className="w-full" 
+            onClick={handleFetchAffected}
+            disabled={isLoading || !facultyId}
+          >
+            {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+            Find Affected Classes
+          </Button>
+
+          <div className="pt-4 border-t border-white/10">
+            <Button 
+              variant="secondary" 
+              className="w-full border-red-500/50 text-red-400 hover:bg-red-500/10" 
+              onClick={handleMarkAbsent}
+              disabled={isSaving || !facultyId}
+            >
+              {isSaving ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <CircleSlash2 className="mr-2 h-4 w-4" />}
+              Mark Absent (All Day)
+            </Button>
+          </div>
+
+          {message && (
+            <div className={`p-4 rounded-xl text-sm ${message.type === 'error' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
+              {message.text}
+            </div>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="text-lg font-semibold text-white">Affected Schedule</h3>
+            <Badge tone="info">{affectedClasses.length} Classes</Badge>
+          </div>
+
+          {!affectedClasses.length ? (
+            <EmptyState 
+              icon={CalendarRange}
+              title="No classes found"
+              description="Select a faculty and date to see which classes are affected by their absence."
+            />
+          ) : (
+            <div className="space-y-4">
+              {affectedClasses.map((cls) => (
+                <div key={cls.id} className="flex flex-col md:flex-row gap-4 p-4 rounded-2xl border border-white/10 bg-white/[0.03] transition hover:bg-white/[0.05]">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Badge tone="warning">Slot {cls.slot_number}</Badge>
+                      <span className="text-sm font-medium text-white">{cls.start_time} - {cls.end_time}</span>
+                    </div>
+                    <h4 className="text-base font-semibold text-white">{cls.subject_name}</h4>
+                    <p className="text-sm text-slate-400">{cls.section_name} • Room {cls.room_number}</p>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3 items-end md:items-center">
+                    {cls.assigned ? (
+                      <Badge tone="success" className="h-10 px-4 flex items-center gap-2">
+                        <Activity className="h-4 w-4" />
+                        Substituted
+                      </Badge>
+                    ) : (
+                      <>
+                        <div className="w-full sm:w-64">
+                          <Select
+                            value={selectedSubstitutes[cls.id] || ""}
+                            onChange={(e) => setSelectedSubstitutes(prev => ({ ...prev, [cls.id]: e.target.value }))}
+                          >
+                            <option value="">Select Substitute...</option>
+                            {(substitutes[cls.id] || []).map(sub => (
+                              <option key={sub.id} value={sub.id}>{sub.full_name} ({sub.designation})</option>
+                            ))}
+                          </Select>
+                        </div>
+                        <Button 
+                          variant="primary" 
+                          size="sm"
+                          onClick={() => handleAssignSubstitution(cls.id)}
+                          disabled={!selectedSubstitutes[cls.id]}
+                        >
+                          Assign
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
       </div>
     </div>
   );
